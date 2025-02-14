@@ -1,7 +1,7 @@
 const std = @import("std");
 const maxminddb = @import("maxminddb");
 
-const db_path = "GeoLite2-City.mmdb";
+const db_path = "test-data/test-data/GeoLite2-City-Test.mmdb";
 // We expect a DB file not larger than 1 GB.
 const max_db_size: usize = 1024 * 1024 * 1024;
 
