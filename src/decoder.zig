@@ -1,7 +1,6 @@
 const std = @import("std");
 
 pub const DecodeError = error{
-    FieldNameMismatch,
     ExpectedStructType,
     ExpectedString,
     ExpectedBytes,
@@ -74,6 +73,8 @@ pub const Decoder = struct {
             record = T.init(allocator);
             allocator = record._arena.allocator();
         }
+        // Free the record if decoding has failed.
+        errdefer if (@hasDecl(T, "init")) record.deinit();
 
         // Maps use the size in the control byte (and any following bytes) to indicate
         // the number of key/value pairs in the map, not the size of the payload in bytes.
@@ -82,6 +83,7 @@ pub const Decoder = struct {
         // Once we know the number of pairs, we can look at each pair in turn to determine
         // the size of the key and the key name, as well as the value's type and payload.
         const map_len = field.size;
+        var map_key: ?[]const u8 = null;
         var field_count: usize = 0;
         inline for (std.meta.fields(T)) |f| next_field: {
             // Skip struct fields whose name starts with an underscore, e.g., _allocator.
@@ -94,16 +96,23 @@ pub const Decoder = struct {
                 break;
             }
 
-            field_count += 1;
-
+            // The map key is nulled to advance the map decoding to the next key.
+            // Otherwise the key is used to decode the next struct field.
+            if (map_key == null) {
+                map_key = try self.decodeValue(allocator, []const u8);
+            }
             // Struct fields must match the layout (names and order) in the database.
-            const map_key = try self.decodeValue(allocator, []const u8);
-            if (!std.mem.eql(u8, map_key, f.name)) {
-                return DecodeError.FieldNameMismatch;
+            // When the names don't match, the struct field is skipped.
+            // This is usefull for optional fields, e.g., some db records have city.is_in_european_union flag.
+            if (!std.mem.eql(u8, map_key.?, f.name)) {
+                break :next_field;
             }
 
             const map_value = try self.decodeValue(allocator, f.type);
             @field(record, f.name) = map_value;
+
+            field_count += 1;
+            map_key = null;
         }
 
         return record;
