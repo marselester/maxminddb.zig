@@ -1,5 +1,6 @@
 const std = @import("std");
 const decoder = @import("decoder.zig");
+const mmap = @import("mmap.zig");
 
 pub const ReadError = error{
     MetadataStartNotFound,
@@ -52,6 +53,7 @@ pub const Metadata = struct {
 const data_section_separator_size = 16;
 
 pub const Reader = struct {
+    mapped_file: ?std.fs.File,
     src: []u8,
     offset: usize,
     ipv4_start: usize,
@@ -79,6 +81,41 @@ pub const Reader = struct {
         const search_tree_size: usize = metadata.node_count * metadata.record_size / 4;
 
         var r = Reader{
+            .mapped_file = null,
+            .src = src,
+            .offset = search_tree_size + data_section_separator_size,
+            .ipv4_start = 0,
+            .metadata = metadata,
+            .allocator = allocator,
+        };
+
+        r.ipv4_start = try r.findIPv4Start();
+
+        return r;
+    }
+
+    // Maps a MaxMind DB file into memory.
+    pub fn open_mmap(allocator: std.mem.Allocator, path: []const u8) !Reader {
+        var f = try std.fs.cwd().openFile(path, .{});
+        errdefer f.close();
+
+        const src = try mmap.map(f);
+        errdefer mmap.unmap(src);
+
+        // Decode database metadata which is stored as a separate data section,
+        // see https://maxmind.github.io/MaxMind-DB/#database-metadata.
+        const metadata_start = try findMetadataStart(src);
+        var d = decoder.Decoder{
+            .src = src[metadata_start..],
+            .offset = 0,
+        };
+        const metadata = try d.decodeRecord(allocator, Metadata);
+        errdefer metadata.deinit();
+
+        const search_tree_size: usize = metadata.node_count * metadata.record_size / 4;
+
+        var r = Reader{
+            .mapped_file = f,
             .src = src,
             .offset = search_tree_size + data_section_separator_size,
             .ipv4_start = 0,
@@ -96,7 +133,14 @@ pub const Reader = struct {
     // Note, the records still have to be deinited since they might contain arrays or maps.
     pub fn close(self: *Reader) void {
         self.metadata.deinit();
-        self.allocator.free(self.src);
+
+        if (self.mapped_file == null) {
+            self.allocator.free(self.src);
+            return;
+        }
+
+        mmap.unmap(self.src);
+        self.mapped_file.?.close();
     }
 
     // Looks up a record by an IP address.
