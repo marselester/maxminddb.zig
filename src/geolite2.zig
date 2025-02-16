@@ -22,6 +22,7 @@ pub const City = struct {
         accuracy_radius: u16,
         latitude: f64,
         longitude: f64,
+        metro_code: u16,
         time_zone: []const u8,
     },
     postal: struct {
@@ -32,6 +33,13 @@ pub const City = struct {
         is_in_european_union: bool,
         iso_code: []const u8,
         names: std.hash_map.StringHashMap([]const u8),
+    },
+    represented_country: struct {
+        geoname_id: u32,
+        is_in_european_union: bool,
+        iso_code: []const u8,
+        names: std.hash_map.StringHashMap([]const u8),
+        type: []const u8,
     },
     subdivisions: std.ArrayList(struct {
         geoname_id: u32,
@@ -51,6 +59,7 @@ pub const City = struct {
             .location = undefined,
             .postal = undefined,
             .registered_country = undefined,
+            .represented_country = undefined,
             .subdivisions = undefined,
 
             ._arena = arena,
