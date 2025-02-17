@@ -25,6 +25,7 @@ pub fn build(b: *std.Build) void {
         name: []const u8,
     }{
         .{ .file = "examples/lookup.zig", .name = "example_lookup" },
+        .{ .file = "examples/within.zig", .name = "example_within" },
     };
 
     {

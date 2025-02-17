@@ -1,6 +1,7 @@
 const std = @import("std");
 const decoder = @import("decoder.zig");
 const mmap = @import("mmap.zig");
+const net = @import("net.zig");
 
 pub const ReadError = error{
     MetadataStartNotFound,
@@ -145,19 +146,80 @@ pub const Reader = struct {
 
     // Looks up a record by an IP address.
     pub fn lookup(self: *Reader, comptime T: type, address: *const std.net.Address) !T {
-        const ip_bytes = ipToBytes(address);
+        const ip_bytes = net.ipToBytes(address);
         const pointer, _ = try self.findAddressInTree(ip_bytes);
         if (pointer == 0) {
             return ReadError.AddressNotFound;
         }
 
+        return try self.resolveDataPointerAndDecode(T, pointer);
+    }
+
+    // Iterates over blocks of IP networks.
+    // TODO: Add support for CIDR arg because so far the function defaults to ::/0 network.
+    pub fn within(self: *Reader, comptime T: type) !Iterator(T) {
+        const ip_bytes = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+        // const ip_bytes = [4]u8{ 0, 0, 0, 0 };
+        const prefix_len: usize = 0;
+        const bit_count: usize = ip_bytes.len * 8;
+
+        var node = self.startNode(bit_count);
+        const node_count = self.metadata.node_count;
+
+        var stack = try std.ArrayList(WithinNode).initCapacity(self.allocator, bit_count - prefix_len);
+        errdefer stack.deinit();
+
+        // Traverse down the tree to the level that matches the CIDR mark.
+        var i: usize = 0;
+        while (i < prefix_len) {
+            const bit = 1 & std.math.shr(usize, ip_bytes[i >> 3], 7 - (i % 8));
+
+            node = try self.readNode(node, bit);
+            // We've hit a dead end before we exhausted our prefix.
+            if (node >= node_count) {
+                break;
+            }
+
+            i += 1;
+        }
+
+        // Now anything that's below node in the tree is "within",
+        // start with the node we traversed to as our to be processed stack.
+        // Else the stack will be empty and we'll be returning an iterator that visits nothing.
+        if (node < node_count) {
+            try stack.append(WithinNode{
+                .node = node,
+                .ip_bytes = ip_bytes,
+                .prefix_len = prefix_len,
+            });
+        }
+
+        return .{
+            .reader = self,
+            .node_count = node_count,
+            .stack = stack,
+        };
+    }
+
+    fn resolveDataPointerAndDecode(self: *Reader, comptime T: type, pointer: usize) !T {
         const record_offset = try self.resolveDataPointer(pointer);
 
         var d = decoder.Decoder{
             .src = self.src[self.offset..],
             .offset = record_offset,
         };
+
         return try d.decodeRecord(self.allocator, T);
+    }
+
+    fn resolveDataPointer(self: *Reader, pointer: usize) !usize {
+        const resolved: usize = pointer - self.metadata.node_count - data_section_separator_size;
+
+        if (resolved > self.src.len) {
+            return ReadError.CorruptedTree;
+        }
+
+        return resolved;
     }
 
     fn findAddressInTree(self: *Reader, ip_address: []const u8) !struct { usize, usize } {
@@ -240,16 +302,6 @@ pub const Reader = struct {
         };
     }
 
-    fn resolveDataPointer(self: *Reader, pointer: usize) !usize {
-        const resolved: usize = pointer - self.metadata.node_count - data_section_separator_size;
-
-        if (resolved > self.src.len) {
-            return ReadError.CorruptedTree;
-        }
-
-        return resolved;
-    }
-
     fn findMetadataStart(src: []u8) !usize {
         // The last occurrence of this string in the file marks the end of the data section
         // and the beginning of the metadata.
@@ -264,37 +316,82 @@ pub const Reader = struct {
     }
 };
 
-// Converts an IP address into bytes slice, e.g., IPv6 address
-// 1000:0ac3:22a2:0000:0000:4b3c:0504:1234 is converted into
-// [16 0 10 195 34 162 0 0 0 0 75 60 5 4 18 52].
-fn ipToBytes(address: *const std.net.Address) []const u8 {
-    return switch (address.any.family) {
-        std.posix.AF.INET => {
-            const b = std.mem.asBytes(&address.in.sa.addr).*;
-            return &b;
-        },
-        std.posix.AF.INET6 => &address.in6.sa.addr,
-        else => unreachable,
-    };
-}
+const WithinNode = struct {
+    ip_bytes: [16]u8,
+    prefix_len: usize,
+    node: usize,
+};
 
-test "ipToBytes" {
-    const tests = [_]struct {
-        addr: []const u8,
-        want: []const u8,
-    }{
-        .{
-            .addr = "89.160.20.128",
-            .want = &.{ 89, 160, 20, 128 },
-        },
-        .{
-            .addr = "1000:0ac3:22a2:0000:0000:4b3c:0504:1234",
-            .want = &.{ 16, 0, 10, 195, 34, 162, 0, 0, 0, 0, 75, 60, 5, 4, 18, 52 },
-        },
-    };
+fn Iterator(comptime T: type) type {
+    return struct {
+        reader: *Reader,
+        node_count: usize,
+        stack: std.ArrayList(WithinNode),
 
-    for (tests) |tc| {
-        const addr = try std.net.Address.parseIp(tc.addr, 0);
-        try std.testing.expectEqualStrings(tc.want, ipToBytes(&addr));
-    }
+        const Self = @This();
+
+        pub const Item = struct {
+            net: net.Network,
+            record: T,
+        };
+
+        pub fn next(self: *Self) !?Item {
+            while (self.stack.popOrNull()) |current| {
+                const reader = self.reader;
+                const bit_count = current.ip_bytes.len * 8;
+
+                // Skip networks that are aliases for the IPv4 network.
+                if (reader.ipv4_start != 0 and
+                    reader.ipv4_start == current.node and
+                    bit_count == 128 and
+                    !std.mem.allEqual(u8, current.ip_bytes[0..12], 0))
+                {
+                    continue;
+                }
+
+                // Found a data node to decode a record, e.g., geolite2.City.
+                if (current.node > self.node_count) {
+                    const ip_net = try net.Network.init(
+                        &current.ip_bytes,
+                        current.prefix_len,
+                    );
+
+                    const record = try reader.resolveDataPointerAndDecode(T, current.node);
+
+                    return Item{
+                        .net = ip_net,
+                        .record = record,
+                    };
+                } else if (current.node < self.node_count) {
+                    // In order traversal of the children on the right (1-bit).
+                    var node = try reader.readNode(current.node, 1);
+                    var right_ip_bytes = current.ip_bytes;
+                    right_ip_bytes[current.prefix_len >> 3] |= std.math.shl(
+                        u8,
+                        1,
+                        (bit_count - current.prefix_len - 1) % 8,
+                    );
+                    try self.stack.append(WithinNode{
+                        .node = node,
+                        .ip_bytes = right_ip_bytes,
+                        .prefix_len = current.prefix_len + 1,
+                    });
+
+                    // In order traversal of the children on the left (0-bit).
+                    node = try reader.readNode(current.node, 0);
+                    try self.stack.append(WithinNode{
+                        .node = node,
+                        .ip_bytes = current.ip_bytes,
+                        .prefix_len = current.prefix_len + 1,
+                    });
+                }
+            }
+
+            return null;
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.stack.deinit();
+        }
+    };
 }
