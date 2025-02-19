@@ -156,12 +156,10 @@ pub const Reader = struct {
     }
 
     // Iterates over blocks of IP networks.
-    // TODO: Add support for CIDR arg because so far the function defaults to ::/0 network.
-    pub fn within(self: *Reader, comptime T: type) !Iterator(T) {
-        const ip_bytes = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-        // const ip_bytes = [4]u8{ 0, 0, 0, 0 };
-        const prefix_len: usize = 0;
-        const bit_count: usize = ip_bytes.len * 8;
+    pub fn within(self: *Reader, comptime T: type, network: net.Network) !Iterator(T) {
+        const ip_bytes = net.IP.init(network.ip);
+        const prefix_len: usize = network.prefix_len;
+        const bit_count: usize = ip_bytes.bitCount();
 
         var node = self.startNode(bit_count);
         const node_count = self.metadata.node_count;
@@ -172,7 +170,7 @@ pub const Reader = struct {
         // Traverse down the tree to the level that matches the CIDR mark.
         var i: usize = 0;
         while (i < prefix_len) {
-            const bit = 1 & std.math.shr(usize, ip_bytes[i >> 3], 7 - (i % 8));
+            const bit = ip_bytes.bitAt(i);
 
             node = try self.readNode(node, bit);
             // We've hit a dead end before we exhausted our prefix.
@@ -317,7 +315,7 @@ pub const Reader = struct {
 };
 
 const WithinNode = struct {
-    ip_bytes: [16]u8,
+    ip_bytes: net.IP,
     prefix_len: usize,
     node: usize,
 };
@@ -338,23 +336,20 @@ fn Iterator(comptime T: type) type {
         pub fn next(self: *Self) !?Item {
             while (self.stack.popOrNull()) |current| {
                 const reader = self.reader;
-                const bit_count = current.ip_bytes.len * 8;
+                const bit_count = current.ip_bytes.bitCount();
 
                 // Skip networks that are aliases for the IPv4 network.
                 if (reader.ipv4_start != 0 and
                     reader.ipv4_start == current.node and
                     bit_count == 128 and
-                    !std.mem.allEqual(u8, current.ip_bytes[0..12], 0))
+                    !current.ip_bytes.isV4InV6())
                 {
                     continue;
                 }
 
                 // Found a data node to decode a record, e.g., geolite2.City.
                 if (current.node > self.node_count) {
-                    const ip_net = try net.Network.init(
-                        &current.ip_bytes,
-                        current.prefix_len,
-                    );
+                    const ip_net = current.ip_bytes.network(current.prefix_len);
 
                     const record = try reader.resolveDataPointerAndDecode(T, current.node);
 
@@ -366,11 +361,15 @@ fn Iterator(comptime T: type) type {
                     // In order traversal of the children on the right (1-bit).
                     var node = try reader.readNode(current.node, 1);
                     var right_ip_bytes = current.ip_bytes;
-                    right_ip_bytes[current.prefix_len >> 3] |= std.math.shl(
-                        u8,
-                        1,
-                        (bit_count - current.prefix_len - 1) % 8,
-                    );
+
+                    if (current.prefix_len < bit_count) {
+                        const bit = current.prefix_len;
+                        switch (right_ip_bytes) {
+                            .v4 => |*b| b[bit >> 3] |= std.math.shl(u8, 1, (bit_count - bit - 1) % 8),
+                            .v6 => |*b| b[bit >> 3] |= std.math.shl(u8, 1, (bit_count - bit - 1) % 8),
+                        }
+                    }
+
                     try self.stack.append(WithinNode{
                         .node = node,
                         .ip_bytes = right_ip_bytes,

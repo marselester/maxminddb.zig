@@ -13,10 +13,13 @@ pub fn main() !void {
     var db = try maxminddb.Reader.open_mmap(allocator, db_path);
     defer db.close();
 
-    var n: usize = 0;
-    var it = try db.within(maxminddb.geolite2.City);
+    const network = maxminddb.Network{
+        .ip = try std.net.Address.parseIp("0.0.0.0", 0),
+    };
+    var it = try db.within(maxminddb.geolite2.City, network);
     defer it.deinit();
 
+    var n: usize = 0;
     while (try it.next()) |item| {
         defer item.record.deinit();
 

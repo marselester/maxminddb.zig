@@ -3,56 +3,72 @@ const std = @import("std");
 // Represents an IP network.
 pub const Network = struct {
     ip: std.net.Address,
-    prefix_len: usize,
+    prefix_len: usize = 0,
+};
 
-    pub fn init(ip_bytes: []const u8, prefix_len: usize) !Network {
-        return switch (ip_bytes.len) {
-            4 => .{
-                .ip = std.net.Address.initIp4([4]u8{
-                    ip_bytes[0],
-                    ip_bytes[1],
-                    ip_bytes[2],
-                    ip_bytes[3],
-                }, 0),
+// Represents IPv4 or IPv6 bytes.
+pub const IP = union(enum) {
+    v4: [4]u8,
+    v6: [16]u8,
+
+    pub fn init(addr: std.net.Address) IP {
+        return switch (addr.any.family) {
+            std.posix.AF.INET => .{
+                .v4 = std.mem.asBytes(&addr.in.sa.addr).*,
+            },
+            std.posix.AF.INET6 => .{
+                .v6 = addr.in6.sa.addr,
+            },
+            else => unreachable,
+        };
+    }
+
+    pub fn bitAt(self: IP, index: usize) usize {
+        return switch (self) {
+            .v4 => |b| 1 & std.math.shr(usize, b[index >> 3], 7 - (index % 8)),
+            .v6 => |b| 1 & std.math.shr(usize, b[index >> 3], 7 - (index % 8)),
+        };
+    }
+
+    pub fn bitCount(self: IP) usize {
+        return switch (self) {
+            .v4 => 32,
+            .v6 => 128,
+        };
+    }
+
+    pub fn isV4InV6(self: IP) bool {
+        return switch (self) {
+            .v4 => false,
+            .v6 => |b| std.mem.allEqual(u8, b[0..12], 0),
+        };
+    }
+
+    pub fn network(self: IP, prefix_len: usize) Network {
+        return switch (self) {
+            .v4 => |b| .{
+                .ip = std.net.Address.initIp4(b, 0),
                 .prefix_len = prefix_len,
             },
-            16 => {
+            .v6 => |b| {
                 // IPv4 in IPv6 form.
-                if (std.mem.allEqual(u8, ip_bytes[0..12], 0)) {
+                if (std.mem.allEqual(u8, b[0..12], 0)) {
                     return .{
                         .ip = std.net.Address.initIp4([4]u8{
-                            ip_bytes[12],
-                            ip_bytes[13],
-                            ip_bytes[14],
-                            ip_bytes[15],
+                            b[12],
+                            b[13],
+                            b[14],
+                            b[15],
                         }, 0),
                         .prefix_len = prefix_len - 96,
                     };
                 }
 
                 return .{
-                    .ip = std.net.Address.initIp6([16]u8{
-                        ip_bytes[0],
-                        ip_bytes[1],
-                        ip_bytes[2],
-                        ip_bytes[3],
-                        ip_bytes[4],
-                        ip_bytes[5],
-                        ip_bytes[6],
-                        ip_bytes[7],
-                        ip_bytes[8],
-                        ip_bytes[9],
-                        ip_bytes[10],
-                        ip_bytes[11],
-                        ip_bytes[12],
-                        ip_bytes[13],
-                        ip_bytes[14],
-                        ip_bytes[15],
-                    }, 0, 0, 0),
+                    .ip = std.net.Address.initIp6(b, 0, 0, 0),
                     .prefix_len = prefix_len,
                 };
             },
-            else => error.InvalidNetwork,
         };
     }
 };
