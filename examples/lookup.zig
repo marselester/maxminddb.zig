@@ -17,7 +17,7 @@ pub fn main() !void {
     const city = try db.lookup(maxminddb.geolite2.City, &ip);
     defer city.deinit();
 
-    var it = city.country.names.iterator();
+    var it = city.country.names.?.iterator();
     while (it.next()) |kv| {
         std.debug.print("{s} = {s}\n", .{ kv.key_ptr.*, kv.value_ptr.* });
     }

@@ -25,7 +25,10 @@ pub fn main() !void {
 
         const continent = item.record.continent.code;
         const country = item.record.country.iso_code;
-        const city = item.record.city.names.get("en") orelse "";
+        var city: []const u8 = "";
+        if (item.record.city.names) |city_names| {
+            city = city_names.get("en") orelse "";
+        }
 
         if (city.len != 0) {
             try stdout.print("{}/{d} {s}-{s}-{s}\n", .{

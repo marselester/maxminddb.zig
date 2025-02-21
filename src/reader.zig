@@ -16,15 +16,15 @@ pub const ReadError = error{
 /// the database type and description, the IP version supported,
 /// and an array of the natural languages included.
 pub const Metadata = struct {
-    binary_format_major_version: u16,
-    binary_format_minor_version: u16,
-    build_epoch: u64,
-    database_type: []const u8,
-    description: std.hash_map.StringHashMap([]const u8),
-    ip_version: u16,
-    languages: std.ArrayList([]const u8),
-    node_count: u32,
-    record_size: u16,
+    binary_format_major_version: u16 = 0,
+    binary_format_minor_version: u16 = 0,
+    build_epoch: u64 = 0,
+    database_type: []const u8 = "",
+    description: ?std.hash_map.StringHashMap([]const u8) = null,
+    ip_version: u16 = 0,
+    languages: ?std.ArrayList([]const u8) = null,
+    node_count: u32 = 0,
+    record_size: u16 = 0,
 
     _arena: std.heap.ArenaAllocator,
 
@@ -32,16 +32,6 @@ pub const Metadata = struct {
         const arena = std.heap.ArenaAllocator.init(allocator);
 
         return .{
-            .binary_format_major_version = 0,
-            .binary_format_minor_version = 0,
-            .build_epoch = 0,
-            .database_type = "",
-            .description = undefined,
-            .ip_version = 0,
-            .languages = undefined,
-            .node_count = 0,
-            .record_size = 0,
-
             ._arena = arena,
         };
     }

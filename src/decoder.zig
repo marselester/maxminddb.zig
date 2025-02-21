@@ -67,11 +67,16 @@ pub const Decoder = struct {
         // The decoded record (e.g., geolite2.City) must be initialized with an allocator,
         // so the caller could free the memory when the record is no longer needed.
         // Record's inner structs will use the same allocator.
+        //
+        // Note, all the record's fields must be defined, i.e., .{ .some_field = undefined }
+        // could contain garbage if the field wasn't found in the database and therefore not decoded.
         var record: T = undefined;
         var allocator = parent_allocator;
         if (@hasDecl(T, "init")) {
             record = T.init(allocator);
             allocator = record._arena.allocator();
+        } else {
+            record = .{};
         }
         // Free the record if decoding has failed.
         errdefer if (@hasDecl(T, "init")) record.deinit();
@@ -156,20 +161,29 @@ pub const Decoder = struct {
             // Float
             f32 => if (field.type == FieldType.Float) self.decodeFloat(field.size) else DecodeError.ExpectedFloat,
             else => {
-                switch (@typeInfo(T)) {
+                // We support Structs or Optional Structs only to safely decode arrays and hashmaps.
+                comptime var DecodedType: type = T;
+                switch (@typeInfo(DecodedType)) {
                     .Struct => {},
+                    .Optional => |opt| {
+                        DecodedType = opt.child;
+                        switch (@typeInfo(DecodedType)) {
+                            .Struct => {},
+                            else => return DecodeError.UnsupportedFieldType,
+                        }
+                    },
                     else => return DecodeError.UnsupportedFieldType,
                 }
 
                 // Decode Map into std.hash_map.HashMap.
-                if (@hasDecl(T, "KV")) {
+                if (@hasDecl(DecodedType, "KV")) {
                     if (field.type != FieldType.Map) {
                         return DecodeError.ExpectedMap;
                     }
 
-                    const Key = std.meta.FieldType(T.KV, .key);
-                    const Value = std.meta.FieldType(T.KV, .value);
-                    var map = T.init(allocator);
+                    const Key = std.meta.FieldType(DecodedType.KV, .key);
+                    const Value = std.meta.FieldType(DecodedType.KV, .value);
+                    var map = DecodedType.init(allocator);
                     const map_len = field.size;
                     for (0..map_len) |_| {
                         const key = try self.decodeValue(allocator, Key);
@@ -181,12 +195,12 @@ pub const Decoder = struct {
                 }
 
                 // Decode Array into std.ArrayList.
-                if (@hasDecl(T, "Slice")) {
+                if (@hasDecl(DecodedType, "Slice")) {
                     if (field.type != FieldType.Array) {
                         return DecodeError.ExpectedArray;
                     }
 
-                    const Value = std.meta.Child(T.Slice);
+                    const Value = std.meta.Child(DecodedType.Slice);
                     var array = std.ArrayList(Value).init(allocator);
                     const array_len = field.size;
                     for (0..array_len) |_| {
