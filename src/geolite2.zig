@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const StringMap = std.hash_map.StringHashMap([]const u8);
+pub const Names = std.hash_map.StringHashMap([]const u8);
 
 /// Country represents a record in the GeoLite2-Country database, for example,
 /// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoLite2-Country-Test.json.
@@ -18,19 +18,19 @@ pub const Country = struct {
     pub const Continent = struct {
         code: []const u8 = "",
         geoname_id: u32 = 0,
-        names: ?StringMap = null,
+        names: ?Names = null,
     };
     pub const Country = struct {
         geoname_id: u32 = 0,
         is_in_european_union: bool = false,
         iso_code: []const u8 = "",
-        names: ?StringMap = null,
+        names: ?Names = null,
     };
     pub const RepresentedCountry = struct {
         geoname_id: u32 = 0,
         is_in_european_union: bool = false,
         iso_code: []const u8 = "",
-        names: ?StringMap = null,
+        names: ?Names = null,
         type: []const u8 = "",
     };
 
@@ -70,7 +70,7 @@ pub const City = struct {
     const Self = @This();
     pub const City = struct {
         geoname_id: u32 = 0,
-        names: ?StringMap = null,
+        names: ?Names = null,
     };
     pub const Location = struct {
         accuracy_radius: u16 = 0,
@@ -85,7 +85,7 @@ pub const City = struct {
     pub const Subdivision = struct {
         geoname_id: u32 = 0,
         iso_code: []const u8 = "",
-        names: ?StringMap = null,
+        names: ?Names = null,
     };
 
     pub fn init(allocator: std.mem.Allocator) Self {

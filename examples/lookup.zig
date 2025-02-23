@@ -1,7 +1,7 @@
 const std = @import("std");
 const maxminddb = @import("maxminddb");
 
-const db_path = "test-data/test-data/GeoLite2-City-Test.mmdb";
+const db_path = "test-data/test-data/GeoIP2-City-Test.mmdb";
 // We expect a DB file not larger than 1 GB.
 const max_db_size: usize = 1024 * 1024 * 1024;
 
@@ -14,7 +14,7 @@ pub fn main() !void {
     defer db.close();
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const city = try db.lookup(maxminddb.geolite2.City, &ip);
+    const city = try db.lookup(maxminddb.geoip2.City, &ip);
     defer city.deinit();
 
     var it = city.country.names.?.iterator();

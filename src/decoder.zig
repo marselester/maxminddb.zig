@@ -169,10 +169,16 @@ pub const Decoder = struct {
                         DecodedType = opt.child;
                         switch (@typeInfo(DecodedType)) {
                             .Struct => {},
-                            else => return DecodeError.UnsupportedFieldType,
+                            else => {
+                                std.debug.print("expected field {any} got optional {any}\n", .{ field, DecodedType });
+                                return DecodeError.UnsupportedFieldType;
+                            },
                         }
                     },
-                    else => return DecodeError.UnsupportedFieldType,
+                    else => {
+                        std.debug.print("expected field {any} got {any}\n", .{ field, DecodedType });
+                        return DecodeError.UnsupportedFieldType;
+                    },
                 }
 
                 // Decode Map into std.hash_map.HashMap.
