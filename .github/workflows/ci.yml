@@ -1,0 +1,21 @@
+name: CI
+
+on: [push]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo snap install zig --classic --beta
+          zig version
+      - name: Fetch test-data
+        run: git submodule update --init
+      - name: Run tests
+        run: zig build test
+      - name: Run lookup example
+        run: zig build example_lookup
+      - name: Run within example
+        run: zig build example_within
