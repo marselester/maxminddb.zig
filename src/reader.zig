@@ -324,7 +324,7 @@ fn Iterator(comptime T: type) type {
         };
 
         pub fn next(self: *Self) !?Item {
-            while (self.stack.popOrNull()) |current| {
+            while (self.stack.pop()) |current| {
                 const reader = self.reader;
                 const bit_count = current.ip_bytes.bitCount();
 

@@ -164,11 +164,11 @@ pub const Decoder = struct {
                 // We support Structs or Optional Structs only to safely decode arrays and hashmaps.
                 comptime var DecodedType: type = T;
                 switch (@typeInfo(DecodedType)) {
-                    .Struct => {},
-                    .Optional => |opt| {
+                    .@"struct" => {},
+                    .optional => |opt| {
                         DecodedType = opt.child;
                         switch (@typeInfo(DecodedType)) {
-                            .Struct => {},
+                            .@"struct" => {},
                             else => {
                                 std.debug.print("expected field {any} got optional {any}\n", .{ field, DecodedType });
                                 return DecodeError.UnsupportedFieldType;

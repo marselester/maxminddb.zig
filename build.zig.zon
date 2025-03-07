@@ -1,6 +1,7 @@
 .{
-    .name = "maxminddb",
+    .name = .maxminddb,
     .version = "0.0.0",
+    .fingerprint = 0x9ea10897ba27121c,
     .paths = .{
         "build.zig",
         "build.zig.zon",
