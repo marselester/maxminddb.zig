@@ -78,8 +78,7 @@ pub const IP = union(enum) {
 pub fn ipToBytes(address: *const std.net.Address) []const u8 {
     return switch (address.any.family) {
         std.posix.AF.INET => {
-            const b = std.mem.asBytes(&address.in.sa.addr).*;
-            return &b;
+            return std.mem.asBytes(&address.in.sa.addr);
         },
         std.posix.AF.INET6 => &address.in6.sa.addr,
         else => unreachable,
