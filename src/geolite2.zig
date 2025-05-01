@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const Names = std.hash_map.StringHashMap([]const u8);
+pub const Names = std.StringArrayHashMap([]const u8);
 
 /// Country represents a record in the GeoLite2-Country database, for example,
 /// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoLite2-Country-Test.json.
