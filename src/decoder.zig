@@ -191,10 +191,12 @@ pub const Decoder = struct {
                     const Value = std.meta.FieldType(DecodedType.KV, .value);
                     var map = DecodedType.init(allocator);
                     const map_len = field.size;
+                    try map.ensureTotalCapacity(@intCast(map_len));
+
                     for (0..map_len) |_| {
                         const key = try self.decodeValue(allocator, Key);
                         const value = try self.decodeValue(allocator, Value);
-                        try map.put(key, value);
+                        map.putAssumeCapacity(key, value);
                     }
 
                     return map;
