@@ -175,7 +175,7 @@ pub const Reader = struct {
         // start with the node we traversed to as our to be processed stack.
         // Else the stack will be empty and we'll be returning an iterator that visits nothing.
         if (node < node_count) {
-            try stack.append(WithinNode{
+            stack.appendAssumeCapacity(WithinNode{
                 .node = node,
                 .ip_bytes = ip_bytes,
                 .prefix_len = prefix_len,
@@ -360,7 +360,7 @@ fn Iterator(comptime T: type) type {
                         }
                     }
 
-                    try self.stack.append(WithinNode{
+                    self.stack.appendAssumeCapacity(WithinNode{
                         .node = node,
                         .ip_bytes = right_ip_bytes,
                         .prefix_len = current.prefix_len + 1,
@@ -368,7 +368,7 @@ fn Iterator(comptime T: type) type {
 
                     // In order traversal of the children on the left (0-bit).
                     node = try reader.readNode(current.node, 0);
-                    try self.stack.append(WithinNode{
+                    self.stack.appendAssumeCapacity(WithinNode{
                         .node = node,
                         .ip_bytes = current.ip_bytes,
                         .prefix_len = current.prefix_len + 1,

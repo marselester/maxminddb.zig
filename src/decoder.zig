@@ -191,7 +191,7 @@ pub const Decoder = struct {
                     const Value = std.meta.FieldType(DecodedType.KV, .value);
                     var map = DecodedType.init(allocator);
                     const map_len = field.size;
-                    try map.ensureTotalCapacity(@intCast(map_len));
+                    try map.ensureTotalCapacity(map_len);
 
                     for (0..map_len) |_| {
                         const key = try self.decodeValue(allocator, Key);
@@ -209,11 +209,12 @@ pub const Decoder = struct {
                     }
 
                     const Value = std.meta.Child(DecodedType.Slice);
-                    var array = std.ArrayList(Value).init(allocator);
                     const array_len = field.size;
+                    var array = try std.ArrayList(Value).initCapacity(allocator, array_len);
+
                     for (0..array_len) |_| {
                         const value = try self.decodeValue(allocator, Value);
-                        try array.append(value);
+                        array.appendAssumeCapacity(value);
                     }
 
                     return array;

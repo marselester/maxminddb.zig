@@ -17,7 +17,7 @@ test {
 }
 
 fn expectEqualMaps(
-    map: std.hash_map.StringHashMap([]const u8),
+    map: std.StringArrayHashMap([]const u8),
     keys: []const []const u8,
     values: []const []const u8,
 ) !void {
