@@ -11,10 +11,12 @@ pub fn main() !void {
     defer _ = gpa.detectLeaks();
 
     var db = try maxminddb.Reader.open(allocator, db_path, max_db_size);
-    defer db.close();
+    defer db.close(allocator);
 
+    // Note, for better performance use arena allocator and reset it after calling lookup().
+    // You won't need to call city.deinit() in that case.
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const city = try db.lookup(maxminddb.geoip2.City, &ip);
+    const city = try db.lookup(allocator, maxminddb.geoip2.City, &ip);
     defer city.deinit();
 
     var it = city.country.names.?.iterator();

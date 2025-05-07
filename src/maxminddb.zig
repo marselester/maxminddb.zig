@@ -32,19 +32,20 @@ fn expectEqualMaps(
     }
 }
 
+const allocator = std.testing.allocator;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const expectEqualDeep = std.testing.expectEqualDeep;
 
 test "GeoLite2 Country" {
-    var db = try Reader.open_mmap(
-        std.testing.allocator,
+    var db = try Reader.mmap(
+        allocator,
         "test-data/test-data/GeoLite2-Country-Test.mmdb",
     );
-    defer db.close();
+    defer db.unmap();
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(geolite2.Country, &ip);
+    const got = try db.lookup(allocator, geolite2.Country, &ip);
     defer got.deinit();
 
     try expectEqualStrings("EU", got.continent.code);
@@ -77,14 +78,14 @@ test "GeoLite2 Country" {
 }
 
 test "GeoLite2 City" {
-    var db = try Reader.open_mmap(
-        std.testing.allocator,
+    var db = try Reader.mmap(
+        allocator,
         "test-data/test-data/GeoLite2-City-Test.mmdb",
     );
-    defer db.close();
+    defer db.unmap();
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(geolite2.City, &ip);
+    const got = try db.lookup(allocator, geolite2.City, &ip);
     defer got.deinit();
 
     try expectEqual(2694762, got.city.geoname_id);
@@ -146,14 +147,14 @@ test "GeoLite2 City" {
 }
 
 test "GeoLite2 ASN" {
-    var db = try Reader.open_mmap(
-        std.testing.allocator,
+    var db = try Reader.mmap(
+        allocator,
         "test-data/test-data/GeoLite2-ASN-Test.mmdb",
     );
-    defer db.close();
+    defer db.unmap();
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(geolite2.ASN, &ip);
+    const got = try db.lookup(allocator, geolite2.ASN, &ip);
 
     const want = geolite2.ASN{
         .autonomous_system_number = 29518,
@@ -163,14 +164,14 @@ test "GeoLite2 ASN" {
 }
 
 test "GeoIP2 Country" {
-    var db = try Reader.open_mmap(
-        std.testing.allocator,
+    var db = try Reader.mmap(
+        allocator,
         "test-data/test-data/GeoIP2-Country-Test.mmdb",
     );
-    defer db.close();
+    defer db.unmap();
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(geoip2.Country, &ip);
+    const got = try db.lookup(allocator, geoip2.Country, &ip);
     defer got.deinit();
 
     try expectEqualStrings("EU", got.continent.code);
@@ -210,14 +211,14 @@ test "GeoIP2 Country" {
 }
 
 test "GeoIP2 City" {
-    var db = try Reader.open_mmap(
-        std.testing.allocator,
+    var db = try Reader.mmap(
+        allocator,
         "test-data/test-data/GeoIP2-City-Test.mmdb",
     );
-    defer db.close();
+    defer db.unmap();
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(geoip2.City, &ip);
+    const got = try db.lookup(allocator, geoip2.City, &ip);
     defer got.deinit();
 
     try expectEqual(2694762, got.city.geoname_id);
@@ -286,14 +287,14 @@ test "GeoIP2 City" {
 }
 
 test "GeoIP2 Enterprise" {
-    var db = try Reader.open_mmap(
-        std.testing.allocator,
+    var db = try Reader.mmap(
+        allocator,
         "test-data/test-data/GeoIP2-Enterprise-Test.mmdb",
     );
-    defer db.close();
+    defer db.unmap();
 
     const ip = try std.net.Address.parseIp("74.209.24.0", 0);
-    const got = try db.lookup(geoip2.Enterprise, &ip);
+    const got = try db.lookup(allocator, geoip2.Enterprise, &ip);
     defer got.deinit();
 
     try expectEqual(11, got.city.confidence);
@@ -380,14 +381,14 @@ test "GeoIP2 Enterprise" {
 }
 
 test "GeoIP2 ISP" {
-    var db = try Reader.open_mmap(
-        std.testing.allocator,
+    var db = try Reader.mmap(
+        allocator,
         "test-data/test-data/GeoIP2-ISP-Test.mmdb",
     );
-    defer db.close();
+    defer db.unmap();
 
     const ip = try std.net.Address.parseIp("89.160.20.112", 0);
-    const got = try db.lookup(geoip2.ISP, &ip);
+    const got = try db.lookup(allocator, geoip2.ISP, &ip);
 
     const want = geoip2.ISP{
         .autonomous_system_number = 29518,
@@ -399,14 +400,14 @@ test "GeoIP2 ISP" {
 }
 
 test "GeoIP2 Connection-Type" {
-    var db = try Reader.open_mmap(
-        std.testing.allocator,
+    var db = try Reader.mmap(
+        allocator,
         "test-data/test-data/GeoIP2-Connection-Type-Test.mmdb",
     );
-    defer db.close();
+    defer db.unmap();
 
     const ip = try std.net.Address.parseIp("96.1.20.112", 0);
-    const got = try db.lookup(geoip2.ConnectionType, &ip);
+    const got = try db.lookup(allocator, geoip2.ConnectionType, &ip);
 
     const want = geoip2.ConnectionType{
         .connection_type = "Cable/DSL",
@@ -415,14 +416,14 @@ test "GeoIP2 Connection-Type" {
 }
 
 test "GeoIP2 Anonymous-IP" {
-    var db = try Reader.open_mmap(
-        std.testing.allocator,
+    var db = try Reader.mmap(
+        allocator,
         "test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb",
     );
-    defer db.close();
+    defer db.unmap();
 
     const ip = try std.net.Address.parseIp("81.2.69.0", 0);
-    const got = try db.lookup(geoip2.AnonymousIP, &ip);
+    const got = try db.lookup(allocator, geoip2.AnonymousIP, &ip);
 
     const want = geoip2.AnonymousIP{
         .is_anonymous = true,
@@ -436,14 +437,14 @@ test "GeoIP2 Anonymous-IP" {
 }
 
 test "GeoIP2 DensityIncome" {
-    var db = try Reader.open_mmap(
-        std.testing.allocator,
+    var db = try Reader.mmap(
+        allocator,
         "test-data/test-data/GeoIP2-DensityIncome-Test.mmdb",
     );
-    defer db.close();
+    defer db.unmap();
 
     const ip = try std.net.Address.parseIp("5.83.124.123", 0);
-    const got = try db.lookup(geoip2.DensityIncome, &ip);
+    const got = try db.lookup(allocator, geoip2.DensityIncome, &ip);
 
     const want = geoip2.DensityIncome{
         .average_income = 32323,
@@ -453,14 +454,14 @@ test "GeoIP2 DensityIncome" {
 }
 
 test "GeoIP2 Domain" {
-    var db = try Reader.open_mmap(
-        std.testing.allocator,
+    var db = try Reader.mmap(
+        allocator,
         "test-data/test-data/GeoIP2-Domain-Test.mmdb",
     );
-    defer db.close();
+    defer db.unmap();
 
     const ip = try std.net.Address.parseIp("66.92.80.123", 0);
-    const got = try db.lookup(geoip2.Domain, &ip);
+    const got = try db.lookup(allocator, geoip2.Domain, &ip);
 
     const want = geoip2.Domain{
         .domain = "speakeasy.net",
