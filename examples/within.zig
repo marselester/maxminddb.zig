@@ -10,13 +10,13 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     defer _ = gpa.detectLeaks();
 
-    var db = try maxminddb.Reader.open_mmap(allocator, db_path);
-    defer db.close();
+    var db = try maxminddb.Reader.mmap(allocator, db_path);
+    defer db.unmap();
 
     const network = maxminddb.Network{
         .ip = try std.net.Address.parseIp("0.0.0.0", 0),
     };
-    var it = try db.within(maxminddb.geolite2.City, network);
+    var it = try db.within(allocator, maxminddb.geolite2.City, network);
     defer it.deinit();
 
     var n: usize = 0;

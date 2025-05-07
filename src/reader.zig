@@ -1,6 +1,6 @@
 const std = @import("std");
 const decoder = @import("decoder.zig");
-const mmap = @import("mmap.zig");
+const memorymap = @import("mmap.zig");
 const net = @import("net.zig");
 
 pub const ReadError = error{
@@ -49,7 +49,6 @@ pub const Reader = struct {
     offset: usize,
     ipv4_start: usize,
     metadata: Metadata,
-    allocator: std.mem.Allocator,
 
     // Loads a MaxMind DB file into memory.
     pub fn open(allocator: std.mem.Allocator, path: []const u8, max_db_size: usize) !Reader {
@@ -77,7 +76,6 @@ pub const Reader = struct {
             .offset = search_tree_size + data_section_separator_size,
             .ipv4_start = 0,
             .metadata = metadata,
-            .allocator = allocator,
         };
 
         r.ipv4_start = try r.findIPv4Start();
@@ -85,13 +83,21 @@ pub const Reader = struct {
         return r;
     }
 
+    // Frees the memory occupied by the DB file.
+    // From this point all the DB records are unusable because their fields were backed by the same memory.
+    // Note, the records still have to be deinited since they might contain arrays or maps.
+    pub fn close(self: *Reader, allocator: std.mem.Allocator) void {
+        self.metadata.deinit();
+        allocator.free(self.src);
+    }
+
     // Maps a MaxMind DB file into memory.
-    pub fn open_mmap(allocator: std.mem.Allocator, path: []const u8) !Reader {
+    pub fn mmap(allocator: std.mem.Allocator, path: []const u8) !Reader {
         var f = try std.fs.cwd().openFile(path, .{});
         errdefer f.close();
 
-        const src = try mmap.map(f);
-        errdefer mmap.unmap(src);
+        const src = try memorymap.map(f);
+        errdefer memorymap.unmap(src);
 
         // Decode database metadata which is stored as a separate data section,
         // see https://maxmind.github.io/MaxMind-DB/#database-metadata.
@@ -111,7 +117,6 @@ pub const Reader = struct {
             .offset = search_tree_size + data_section_separator_size,
             .ipv4_start = 0,
             .metadata = metadata,
-            .allocator = allocator,
         };
 
         r.ipv4_start = try r.findIPv4Start();
@@ -119,34 +124,39 @@ pub const Reader = struct {
         return r;
     }
 
-    // Frees the memory occupied by the DB file.
+    // Unmaps the DB file.
     // From this point all the DB records are unusable because their fields were backed by the same memory.
     // Note, the records still have to be deinited since they might contain arrays or maps.
-    pub fn close(self: *Reader) void {
+    pub fn unmap(self: *Reader) void {
         self.metadata.deinit();
 
-        if (self.mapped_file == null) {
-            self.allocator.free(self.src);
-            return;
-        }
-
-        mmap.unmap(self.src);
+        memorymap.unmap(self.src);
         self.mapped_file.?.close();
     }
 
     // Looks up a record by an IP address.
-    pub fn lookup(self: *Reader, comptime T: type, address: *const std.net.Address) !T {
+    pub fn lookup(
+        self: *Reader,
+        allocator: std.mem.Allocator,
+        comptime T: type,
+        address: *const std.net.Address,
+    ) !T {
         const ip_bytes = net.ipToBytes(address);
         const pointer, _ = try self.findAddressInTree(ip_bytes);
         if (pointer == 0) {
             return ReadError.AddressNotFound;
         }
 
-        return try self.resolveDataPointerAndDecode(T, pointer);
+        return try self.resolveDataPointerAndDecode(allocator, T, pointer);
     }
 
     // Iterates over blocks of IP networks.
-    pub fn within(self: *Reader, comptime T: type, network: net.Network) !Iterator(T) {
+    pub fn within(
+        self: *Reader,
+        allocator: std.mem.Allocator,
+        comptime T: type,
+        network: net.Network,
+    ) !Iterator(T) {
         const ip_bytes = net.IP.init(network.ip);
         const prefix_len: usize = network.prefix_len;
         const bit_count: usize = ip_bytes.bitCount();
@@ -154,7 +164,7 @@ pub const Reader = struct {
         var node = self.startNode(bit_count);
         const node_count = self.metadata.node_count;
 
-        var stack = try std.ArrayList(WithinNode).initCapacity(self.allocator, bit_count - prefix_len);
+        var stack = try std.ArrayList(WithinNode).initCapacity(allocator, bit_count - prefix_len);
         errdefer stack.deinit();
 
         // Traverse down the tree to the level that matches the CIDR mark.
@@ -186,10 +196,16 @@ pub const Reader = struct {
             .reader = self,
             .node_count = node_count,
             .stack = stack,
+            .allocator = allocator,
         };
     }
 
-    fn resolveDataPointerAndDecode(self: *Reader, comptime T: type, pointer: usize) !T {
+    fn resolveDataPointerAndDecode(
+        self: *Reader,
+        allocator: std.mem.Allocator,
+        comptime T: type,
+        pointer: usize,
+    ) !T {
         const record_offset = try self.resolveDataPointer(pointer);
 
         var d = decoder.Decoder{
@@ -197,7 +213,7 @@ pub const Reader = struct {
             .offset = record_offset,
         };
 
-        return try d.decodeRecord(self.allocator, T);
+        return try d.decodeRecord(allocator, T);
     }
 
     fn resolveDataPointer(self: *Reader, pointer: usize) !usize {
@@ -315,6 +331,7 @@ fn Iterator(comptime T: type) type {
         reader: *Reader,
         node_count: usize,
         stack: std.ArrayList(WithinNode),
+        allocator: std.mem.Allocator,
 
         const Self = @This();
 
@@ -341,7 +358,11 @@ fn Iterator(comptime T: type) type {
                 if (current.node > self.node_count) {
                     const ip_net = current.ip_bytes.network(current.prefix_len);
 
-                    const record = try reader.resolveDataPointerAndDecode(T, current.node);
+                    const record = try reader.resolveDataPointerAndDecode(
+                        self.allocator,
+                        T,
+                        current.node,
+                    );
 
                     return Item{
                         .net = ip_net,
