@@ -10,9 +10,11 @@ pub fn build(b: *std.Build) void {
 
     {
         const tests = b.addTest(.{
-            .target = target,
-            .optimize = optimize,
-            .root_source_file = b.path("src/maxminddb.zig"),
+            .root_module = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+                .root_source_file = b.path("src/maxminddb.zig"),
+            }),
         });
 
         const run_tests = b.addRunArtifact(tests);
@@ -32,9 +34,11 @@ pub fn build(b: *std.Build) void {
         for (examples) |ex| {
             const exe = b.addExecutable(.{
                 .name = ex.name,
-                .target = target,
-                .optimize = optimize,
-                .root_source_file = b.path(ex.file),
+                .root_module = b.createModule(.{
+                    .target = target,
+                    .optimize = optimize,
+                    .root_source_file = b.path(ex.file),
+                }),
             });
             exe.root_module.addImport("maxminddb", maxminddb_module);
             b.installArtifact(exe);

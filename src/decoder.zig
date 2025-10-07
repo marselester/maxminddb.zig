@@ -187,8 +187,8 @@ pub const Decoder = struct {
                         return DecodeError.ExpectedMap;
                     }
 
-                    const Key = std.meta.FieldType(DecodedType.KV, .key);
-                    const Value = std.meta.FieldType(DecodedType.KV, .value);
+                    const Key = std.meta.fieldInfo(DecodedType.KV, .key).type;
+                    const Value = std.meta.fieldInfo(DecodedType.KV, .value).type;
                     var map = DecodedType.init(allocator);
                     const map_len = field.size;
                     try map.ensureTotalCapacity(map_len);

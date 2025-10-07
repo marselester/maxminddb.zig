@@ -55,7 +55,7 @@ pub const Reader = struct {
         var f = try std.fs.cwd().openFile(path, .{});
         defer f.close();
 
-        const src = try f.reader().readAllAlloc(allocator, max_db_size);
+        const src = try f.readToEndAlloc(allocator, max_db_size);
         errdefer allocator.free(src);
 
         // Decode database metadata which is stored as a separate data section,
@@ -165,7 +165,7 @@ pub const Reader = struct {
         const node_count = self.metadata.node_count;
 
         var stack = try std.ArrayList(WithinNode).initCapacity(allocator, bit_count - prefix_len);
-        errdefer stack.deinit();
+        errdefer stack.deinit(allocator);
 
         // Traverse down the tree to the level that matches the CIDR mark.
         var i: usize = 0;
@@ -401,7 +401,7 @@ fn Iterator(comptime T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self.stack.deinit();
+            self.stack.deinit(self.allocator);
         }
     };
 }
