@@ -208,6 +208,37 @@ test "GeoIP2 Country" {
         },
         got.traits,
     );
+
+    const ip2 = try std.net.Address.parseIp("214.1.1.0", 0);
+    const got2 = try db.lookup(allocator, geoip2.Country, &ip2);
+    defer got2.deinit();
+
+    try expectEqual(true, got2.traits.is_anycast);
+}
+
+test "GeoIP2 Country RepresentedCountry" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoIP2-Country-Test.mmdb",
+    );
+    defer db.unmap();
+
+    const ip = try std.net.Address.parseIp("202.196.224.0", 0);
+    const got = try db.lookup(allocator, geoip2.Country, &ip);
+    defer got.deinit();
+
+    try expectEqualStrings("AS", got.continent.code);
+    try expectEqual(6255147, got.continent.geoname_id);
+
+    try expectEqual(1694008, got.country.geoname_id);
+    try expectEqualStrings("PH", got.country.iso_code);
+
+    try expectEqual(1694008, got.registered_country.geoname_id);
+    try expectEqualStrings("PH", got.registered_country.iso_code);
+
+    try expectEqual(6252001, got.represented_country.geoname_id);
+    try expectEqualStrings("US", got.represented_country.iso_code);
+    try expectEqualStrings("military", got.represented_country.type);
 }
 
 test "GeoIP2 City" {
@@ -284,6 +315,12 @@ test "GeoIP2 City" {
         },
         got.traits,
     );
+
+    const ip2 = try std.net.Address.parseIp("214.1.1.0", 0);
+    const got2 = try db.lookup(allocator, geoip2.City, &ip2);
+    defer got2.deinit();
+
+    try expectEqual(true, got2.traits.is_anycast);
 }
 
 test "GeoIP2 Enterprise" {
@@ -378,6 +415,12 @@ test "GeoIP2 Enterprise" {
         },
         got.traits,
     );
+
+    const ip2 = try std.net.Address.parseIp("214.1.1.0", 0);
+    const got2 = try db.lookup(allocator, geoip2.Enterprise, &ip2);
+    defer got2.deinit();
+
+    try expectEqual(true, got2.traits.is_anycast);
 }
 
 test "GeoIP2 ISP" {
@@ -387,14 +430,16 @@ test "GeoIP2 ISP" {
     );
     defer db.unmap();
 
-    const ip = try std.net.Address.parseIp("89.160.20.112", 0);
+    const ip = try std.net.Address.parseIp("149.101.100.0", 0);
     const got = try db.lookup(allocator, geoip2.ISP, &ip);
 
     const want = geoip2.ISP{
-        .autonomous_system_number = 29518,
-        .autonomous_system_organization = "Bredband2 AB",
-        .isp = "Bredband2 AB",
-        .organization = "Bevtec",
+        .autonomous_system_number = 6167,
+        .autonomous_system_organization = "CELLCO-PART",
+        .isp = "Verizon Wireless",
+        .mobile_country_code = "310",
+        .mobile_network_code = "004",
+        .organization = "Verizon Wireless",
     };
     try expectEqualDeep(want, got);
 }
@@ -465,6 +510,92 @@ test "GeoIP2 Domain" {
 
     const want = geoip2.Domain{
         .domain = "speakeasy.net",
+    };
+    try expectEqualDeep(want, got);
+}
+
+test "GeoIP Anonymous-Plus" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoIP-Anonymous-Plus-Test.mmdb",
+    );
+    defer db.unmap();
+
+    const ip = try std.net.Address.parseIp("1.2.0.1", 0);
+    const got = try db.lookup(allocator, geoip2.AnonymousPlus, &ip);
+
+    const want = geoip2.AnonymousPlus{
+        .anonymizer_confidence = 30,
+        .is_anonymous = true,
+        .is_anonymous_vpn = true,
+        .network_last_seen = "2025-04-14",
+        .provider_name = "foo",
+    };
+    try expectEqualDeep(want, got);
+}
+
+test "GeoIP2 IP-Risk" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoIP2-IP-Risk-Test.mmdb",
+    );
+    defer db.unmap();
+
+    const ip = try std.net.Address.parseIp("6.1.2.1", 0);
+    const got = try db.lookup(allocator, geoip2.IPRisk, &ip);
+
+    const want = geoip2.IPRisk{
+        .anonymizer_confidence = 95,
+        .ip_risk = 75,
+        .is_anonymous = true,
+        .is_anonymous_vpn = true,
+        .network_last_seen = "2025-01-15",
+        .provider_name = "Test VPN Service",
+    };
+    try expectEqualDeep(want, got);
+
+    const ip2 = try std.net.Address.parseIp("214.2.3.5", 0);
+    const got2 = try db.lookup(allocator, geoip2.IPRisk, &ip2);
+
+    const want2 = geoip2.IPRisk{
+        .ip_risk = 90,
+        .is_anonymous = true,
+        .is_anonymous_vpn = true,
+        .is_residential_proxy = true,
+        .is_tor_exit_node = true,
+    };
+    try expectEqualDeep(want2, got2);
+}
+
+test "GeoIP2 Static-IP-Score" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoIP2-Static-IP-Score-Test.mmdb",
+    );
+    defer db.unmap();
+
+    const ip = try std.net.Address.parseIp("1.2.3.4", 0);
+    const got = try db.lookup(allocator, geoip2.StaticIPScore, &ip);
+
+    const want = geoip2.StaticIPScore{
+        .score = 0.05,
+    };
+    try expectEqualDeep(want, got);
+}
+
+test "GeoIP2 User-Count" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoIP2-User-Count-Test.mmdb",
+    );
+    defer db.unmap();
+
+    const ip = try std.net.Address.parseIp("1.2.3.4", 0);
+    const got = try db.lookup(allocator, geoip2.UserCount, &ip);
+
+    const want = geoip2.UserCount{
+        .ipv4_24 = 4,
+        .ipv4_32 = 3,
     };
     try expectEqualDeep(want, got);
 }

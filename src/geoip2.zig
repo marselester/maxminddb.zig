@@ -182,15 +182,9 @@ pub const Enterprise = struct {
         autonomous_system_organization: []const u8 = "",
         connection_type: []const u8 = "",
         domain: []const u8 = "",
-        is_anonymous: bool = false,
-        is_anonymous_vpn: bool = false,
         is_anycast: bool = false,
-        is_hosting_provider: bool = false,
         is_legitimate_proxy: bool = false,
         isp: []const u8 = "",
-        is_public_proxy: bool = false,
-        is_residential_proxy: bool = false,
-        is_tor_exit_node: bool = false,
         mobile_country_code: []const u8 = "",
         mobile_network_code: []const u8 = "",
         organization: []const u8 = "",
@@ -265,4 +259,53 @@ pub const DensityIncome = struct {
 /// Look up the second level domain names associated with IPv4 and IPv6 addresses.
 pub const Domain = struct {
     domain: []const u8 = "",
+};
+
+/// AnonymousPlus represents a record in the GeoIP-Anonymous-Plus database, for example,
+/// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoIP-Anonymous-Plus-Test.json.
+/// It extends AnonymousIP with additional fields like provider name and confidence scores.
+pub const AnonymousPlus = struct {
+    anonymizer_confidence: u16 = 0,
+    is_anonymous: bool = false,
+    is_anonymous_vpn: bool = false,
+    is_hosting_provider: bool = false,
+    is_public_proxy: bool = false,
+    is_residential_proxy: bool = false,
+    is_tor_exit_node: bool = false,
+    network_last_seen: []const u8 = "",
+    provider_name: []const u8 = "",
+};
+
+/// IPRisk represents a record in the GeoIP2-IP-Risk database, for example,
+/// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoIP2-IP-Risk-Test.json.
+/// It provides a risk score for an IP address along with anonymous IP indicators.
+pub const IPRisk = struct {
+    anonymizer_confidence: u16 = 0,
+    ip_risk: f64 = 0,
+    is_anonymous: bool = false,
+    is_anonymous_vpn: bool = false,
+    is_hosting_provider: bool = false,
+    is_public_proxy: bool = false,
+    is_residential_proxy: bool = false,
+    is_tor_exit_node: bool = false,
+    network_last_seen: []const u8 = "",
+    provider_name: []const u8 = "",
+};
+
+/// StaticIPScore represents a record in the GeoIP2-Static-IP-Score database, for example,
+/// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoIP2-Static-IP-Score-Test.json.
+/// It indicates how static or dynamic an IP address assignment is (0-99.99).
+pub const StaticIPScore = struct {
+    score: f64 = 0,
+};
+
+/// UserCount represents a record in the GeoIP2-User-Count database, for example,
+/// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoIP2-User-Count-Test.json.
+/// It provides estimated user counts for IP address ranges at various prefix lengths.
+pub const UserCount = struct {
+    ipv4_24: u32 = 0,
+    ipv4_32: u32 = 0,
+    ipv6_32: u32 = 0,
+    ipv6_48: u32 = 0,
+    ipv6_64: u32 = 0,
 };
