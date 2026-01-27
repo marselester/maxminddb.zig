@@ -88,39 +88,71 @@ pub const Decoder = struct {
         // Once we know the number of pairs, we can look at each pair in turn to determine
         // the size of the key and the key name, as well as the value's type and payload.
         const map_len = field.size;
-        var map_key: ?[]const u8 = null;
         var field_count: usize = 0;
-        inline for (std.meta.fields(T)) |f| next_field: {
-            // Skip struct fields whose name starts with an underscore, e.g., _allocator.
-            if (f.name[0] == '_') {
-                break :next_field;
+        while (field_count < map_len) : (field_count += 1) {
+            const map_key = try self.decodeValue(allocator, []const u8);
+
+            var found = false;
+            inline for (std.meta.fields(T)) |f| {
+                // Skip struct fields whose name starts with an underscore, e.g., _arena.
+                if (f.name[0] == '_') {
+                    continue;
+                }
+
+                if (std.mem.eql(u8, map_key, f.name)) {
+                    const map_value = try self.decodeValue(allocator, f.type);
+                    @field(record, f.name) = map_value;
+                    found = true;
+                    break;
+                }
             }
 
-            // Don't decode more struct fields than the number of the map entries.
-            if (field_count >= map_len) {
-                break;
+            // If the field wasn't found in the struct, skip the value in the database.
+            if (!found) {
+                try self.skipValue();
             }
-
-            // The map key is nulled to advance the map decoding to the next key.
-            // Otherwise the key is used to decode the next struct field.
-            if (map_key == null) {
-                map_key = try self.decodeValue(allocator, []const u8);
-            }
-            // Struct fields must match the layout (names and order) in the database.
-            // When the names don't match, the struct field is skipped.
-            // This is usefull for optional fields, e.g., some db records have city.is_in_european_union flag.
-            if (!std.mem.eql(u8, map_key.?, f.name)) {
-                break :next_field;
-            }
-
-            const map_value = try self.decodeValue(allocator, f.type);
-            @field(record, f.name) = map_value;
-
-            field_count += 1;
-            map_key = null;
         }
 
         return record;
+    }
+
+    // Skips a value in the database without decoding it.
+    // This is used when the database has fields that don't exist in the target struct.
+    fn skipValue(self: *Decoder) !void {
+        const field = self.decodeFieldSizeAndType();
+
+        if (field.type == FieldType.Pointer) {
+            const next_offset = self.decodePointer(field.size);
+            const prev_offset = self.offset;
+
+            self.offset = next_offset;
+            try self.skipValue();
+            self.offset = prev_offset;
+
+            return;
+        }
+
+        switch (field.type) {
+            // Bool has no payload, size is encoded in the control byte.
+            .Bool => {},
+            // Skip each array element.
+            .Array => {
+                for (0..field.size) |_| {
+                    try self.skipValue();
+                }
+            },
+            // Skip each map key-value pair.
+            .Map => {
+                for (0..field.size) |_| {
+                    try self.skipValue();
+                    try self.skipValue();
+                }
+            },
+            // For other types, just advance the offset.
+            else => {
+                self.offset += field.size;
+            },
+        }
     }
 
     // Decodes a struct's field value which can be a built-in data type or another struct.
