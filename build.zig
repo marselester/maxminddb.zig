@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) void {
     }{
         .{ .file = "examples/lookup.zig", .name = "example_lookup" },
         .{ .file = "examples/within.zig", .name = "example_within" },
+        .{ .file = "examples/benchmark.zig", .name = "example_benchmark" },
     };
 
     {
