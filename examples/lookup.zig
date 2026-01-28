@@ -6,7 +6,7 @@ const db_path = "test-data/test-data/GeoIP2-City-Test.mmdb";
 const max_db_size: usize = 1024 * 1024 * 1024;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     const allocator = gpa.allocator();
     defer _ = gpa.detectLeaks();
 

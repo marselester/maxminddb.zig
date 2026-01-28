@@ -4,7 +4,7 @@ const maxminddb = @import("maxminddb");
 const db_path = "test-data/test-data/GeoLite2-City-Test.mmdb";
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     const allocator = gpa.allocator();
     defer _ = gpa.detectLeaks();
 
