@@ -10,6 +10,7 @@ pub const geoip2 = @import("geoip2.zig");
 pub const Error = reader.ReadError || decoder.DecodeError;
 pub const Reader = reader.Reader;
 pub const Metadata = reader.Metadata;
+pub const Iterator = reader.Iterator;
 pub const Network = net.Network;
 
 test {
