@@ -247,20 +247,6 @@ pub const AnonymousIP = struct {
     is_tor_exit_node: bool = false,
 };
 
-/// DensityIncome represents a record in the GeoIP2-DensityIncome database, for example,
-/// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoIP2-DensityIncome-Test.json.
-pub const DensityIncome = struct {
-    average_income: u32 = 0,
-    population_density: u32 = 0,
-};
-
-/// Domain represents a record in the GeoIP2-Domain database, for example,
-/// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoIP2-Domain-Test.json.
-/// Look up the second level domain names associated with IPv4 and IPv6 addresses.
-pub const Domain = struct {
-    domain: []const u8 = "",
-};
-
 /// AnonymousPlus represents a record in the GeoIP-Anonymous-Plus database, for example,
 /// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoIP-Anonymous-Plus-Test.json.
 /// It extends AnonymousIP with additional fields like provider name and confidence scores.
@@ -274,6 +260,20 @@ pub const AnonymousPlus = struct {
     is_tor_exit_node: bool = false,
     network_last_seen: []const u8 = "",
     provider_name: []const u8 = "",
+};
+
+/// DensityIncome represents a record in the GeoIP2-DensityIncome database, for example,
+/// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoIP2-DensityIncome-Test.json.
+pub const DensityIncome = struct {
+    average_income: u32 = 0,
+    population_density: u32 = 0,
+};
+
+/// Domain represents a record in the GeoIP2-Domain database, for example,
+/// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoIP2-Domain-Test.json.
+/// Look up the second level domain names associated with IPv4 and IPv6 addresses.
+pub const Domain = struct {
+    domain: []const u8 = "",
 };
 
 /// IPRisk represents a record in the GeoIP2-IP-Risk database, for example,
