@@ -4,7 +4,69 @@ const std = @import("std");
 pub const Network = struct {
     ip: std.net.Address,
     prefix_len: usize = 0,
+
+    pub fn format(self: Network, writer: anytype) !void {
+        switch (self.ip.any.family) {
+            std.posix.AF.INET => {
+                const b: *const [4]u8 = @ptrCast(&self.ip.in.sa.addr);
+                try writer.print(
+                    "{}.{}.{}.{}/{}",
+                    .{
+                        b[0],
+                        b[1],
+                        b[2],
+                        b[3],
+                        self.prefix_len,
+                    },
+                );
+            },
+            std.posix.AF.INET6 => {
+                const b = self.ip.in6.sa.addr;
+                try writer.print(
+                    "{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}/{}",
+                    .{
+                        std.mem.readInt(u16, b[0..2], .big),
+                        std.mem.readInt(u16, b[2..4], .big),
+                        std.mem.readInt(u16, b[4..6], .big),
+                        std.mem.readInt(u16, b[6..8], .big),
+                        std.mem.readInt(u16, b[8..10], .big),
+                        std.mem.readInt(u16, b[10..12], .big),
+                        std.mem.readInt(u16, b[12..14], .big),
+                        std.mem.readInt(u16, b[14..16], .big),
+                        self.prefix_len,
+                    },
+                );
+            },
+            else => unreachable,
+        }
+    }
 };
+
+test Network {
+    const tests = [_]struct {
+        addr: []const u8,
+        want: []const u8,
+    }{
+        .{
+            .addr = "89.160.20.128",
+            .want = "89.160.20.128/64",
+        },
+        .{
+            .addr = "1000:0ac3:22a2:0000:0000:4b3c:0504:1234",
+            .want = "1000:0ac3:22a2:0000:0000:4b3c:0504:1234/64",
+        },
+    };
+
+    var buf: [128]u8 = undefined;
+    for (tests) |tc| {
+        const addr = Network{
+            .ip = try std.net.Address.parseIp(tc.addr, 0),
+            .prefix_len = 64,
+        };
+        const got = try std.fmt.bufPrint(&buf, "{f}", .{addr});
+        try std.testing.expectEqualStrings(tc.want, got);
+    }
+}
 
 // Represents IPv4 or IPv6 bytes.
 pub const IP = union(enum) {
