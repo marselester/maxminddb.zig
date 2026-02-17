@@ -365,7 +365,7 @@ pub fn Iterator(comptime T: type) type {
             record: T,
         };
 
-        pub fn next(self: *Self) !?Item {
+        pub fn next(self: *Self, allocator: std.mem.Allocator) !?Item {
             while (self.stack.pop()) |current| {
                 const reader = self.reader;
                 const bit_count = current.ip_bytes.bitCount();
@@ -384,7 +384,7 @@ pub fn Iterator(comptime T: type) type {
                     const ip_net = current.ip_bytes.network(current.prefix_len);
 
                     const record = try reader.resolveDataPointerAndDecode(
-                        self.allocator,
+                        allocator,
                         T,
                         current.node,
                     );

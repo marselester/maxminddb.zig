@@ -17,8 +17,10 @@ pub fn main() !void {
     var it = try db.within(allocator, maxminddb.geolite2.City, network);
     defer it.deinit();
 
+    // Note, for better performance use arena allocator and reset it after calling it.next().
+    // You won't need to call item.record.deinit() in that case.
     var n: usize = 0;
-    while (try it.next()) |item| {
+    while (try it.next(allocator)) |item| {
         defer item.record.deinit();
 
         const continent = item.record.continent.code;
