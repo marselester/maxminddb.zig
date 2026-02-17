@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn map(f: std.fs.File) ![]u8 {
+pub fn map(f: std.fs.File) ![]const u8 {
     // TODO: We probably need CreateFileMapping, MapViewOfFile to support Windows,
     // see https://github.com/ziglang/zig/pull/21083.
 
@@ -16,10 +16,10 @@ pub fn map(f: std.fs.File) ![]u8 {
         0,
     );
 
-    return src;
+    return src[0..file_size];
 }
 
-pub fn unmap(src: []u8) void {
+pub fn unmap(src: []const u8) void {
     const page_size = std.heap.pageSize();
     const aligned_src_len = std.mem.alignForward(usize, src.len, page_size);
     std.posix.munmap(@alignCast(src.ptr[0..aligned_src_len]));

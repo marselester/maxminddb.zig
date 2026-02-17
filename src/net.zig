@@ -114,7 +114,7 @@ pub const IP = union(enum) {
             },
             .v6 => |b| {
                 // IPv4 in IPv6 form.
-                if (std.mem.allEqual(u8, b[0..12], 0)) {
+                if (std.mem.allEqual(u8, b[0..12], 0) and prefix_len >= 96) {
                     return .{
                         .ip = std.net.Address.initIp4([4]u8{
                             b[12],

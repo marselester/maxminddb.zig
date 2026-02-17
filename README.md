@@ -53,7 +53,7 @@ For example, commenting out all the `geolite2.City`'s fields but `geolite2.City.
 increases throughput by 60% (639,848 vs 1,025,477 lookups per second).
 
 ```sh
-$ zig build example_benchmark -Doptimize=ReleaseFast
+$ zig build example_benchmark
 ```
 
 <details>

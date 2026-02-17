@@ -9,6 +9,7 @@ pub const ReadError = error{
     CorruptedTree,
     AddressNotFound,
     UnknownRecordSize,
+    InvalidPrefixLen,
 };
 
 /// Metadata holds the metadata decoded from the MaxMind DB file.
@@ -45,7 +46,7 @@ const data_section_separator_size = 16;
 
 pub const Reader = struct {
     mapped_file: ?std.fs.File,
-    src: []u8,
+    src: []const u8,
     offset: usize,
     ipv4_start: usize,
     metadata: Metadata,
@@ -68,12 +69,20 @@ pub const Reader = struct {
         const metadata = try d.decodeRecord(allocator, Metadata);
         errdefer metadata.deinit();
 
-        const search_tree_size: usize = metadata.node_count * metadata.record_size / 4;
+        const search_tree_size = try std.math.mul(
+            usize,
+            metadata.node_count,
+            @as(usize, metadata.record_size) / 4,
+        );
+        const data_offset = search_tree_size + data_section_separator_size;
+        if (data_offset > src.len) {
+            return ReadError.CorruptedTree;
+        }
 
         var r = Reader{
             .mapped_file = null,
             .src = src,
-            .offset = search_tree_size + data_section_separator_size,
+            .offset = data_offset,
             .ipv4_start = 0,
             .metadata = metadata,
         };
@@ -109,12 +118,20 @@ pub const Reader = struct {
         const metadata = try d.decodeRecord(allocator, Metadata);
         errdefer metadata.deinit();
 
-        const search_tree_size: usize = metadata.node_count * metadata.record_size / 4;
+        const search_tree_size = try std.math.mul(
+            usize,
+            metadata.node_count,
+            @as(usize, metadata.record_size) / 4,
+        );
+        const data_offset = search_tree_size + data_section_separator_size;
+        if (data_offset > src.len) {
+            return ReadError.CorruptedTree;
+        }
 
         var r = Reader{
             .mapped_file = f,
             .src = src,
-            .offset = search_tree_size + data_section_separator_size,
+            .offset = data_offset,
             .ipv4_start = 0,
             .metadata = metadata,
         };
@@ -161,10 +178,14 @@ pub const Reader = struct {
         const prefix_len: usize = network.prefix_len;
         const bit_count: usize = ip_bytes.bitCount();
 
+        if (prefix_len > bit_count) {
+            return ReadError.InvalidPrefixLen;
+        }
+
         var node = self.startNode(bit_count);
         const node_count = self.metadata.node_count;
 
-        var stack = try std.ArrayList(WithinNode).initCapacity(allocator, bit_count - prefix_len);
+        var stack = try std.ArrayList(WithinNode).initCapacity(allocator, bit_count - prefix_len + 1);
         errdefer stack.deinit(allocator);
 
         // Traverse down the tree to the level that matches the CIDR mark.
@@ -217,9 +238,13 @@ pub const Reader = struct {
     }
 
     fn resolveDataPointer(self: *Reader, pointer: usize) !usize {
-        const resolved: usize = pointer - self.metadata.node_count - data_section_separator_size;
+        const min_pointer = self.metadata.node_count + data_section_separator_size;
+        if (pointer < min_pointer) {
+            return ReadError.CorruptedTree;
+        }
 
-        if (resolved > self.src.len) {
+        const resolved: usize = pointer - min_pointer;
+        if (self.offset > self.src.len or resolved >= self.src.len - self.offset) {
             return ReadError.CorruptedTree;
         }
 
@@ -306,7 +331,7 @@ pub const Reader = struct {
         };
     }
 
-    fn findMetadataStart(src: []u8) !usize {
+    fn findMetadataStart(src: []const u8) !usize {
         // The last occurrence of this string in the file marks the end of the data section
         // and the beginning of the metadata.
         const metadata_start_marker = "\xAB\xCD\xEFMaxMind.com";

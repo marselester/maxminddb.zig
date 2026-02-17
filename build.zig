@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) void {
                 .name = ex.name,
                 .root_module = b.createModule(.{
                     .target = target,
-                    .optimize = optimize,
+                    .optimize = .ReleaseFast,
                     .root_source_file = b.path(ex.file),
                 }),
             });

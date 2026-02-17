@@ -2,8 +2,7 @@ const std = @import("std");
 
 pub const DecodeError = error{
     ExpectedStructType,
-    ExpectedString,
-    ExpectedBytes,
+    ExpectedStringOrBytes,
     ExpectedDouble,
     ExpectedUint16,
     ExpectedUint32,
@@ -17,6 +16,8 @@ pub const DecodeError = error{
     UnsupportedFieldType,
     InvalidIntegerSize,
     InvalidBoolSize,
+    InvalidDoubleSize,
+    InvalidFloatSize,
 };
 
 // These are database field types as defined in the spec.
@@ -47,7 +48,7 @@ const Field = struct {
 };
 
 pub const Decoder = struct {
-    src: []u8,
+    src: []const u8,
     offset: usize,
 
     // Decodes a record of a given type (e.g., geolite2.City) from the current offset in the src.
@@ -55,7 +56,7 @@ pub const Decoder = struct {
     // This means that strings such as geolite2.City.postal.code are backed by the src's array,
     // so the caller should create a copy of the record when the src is freed (when the database is closed).
     pub fn decodeRecord(self: *Decoder, allocator: std.mem.Allocator, comptime T: type) !T {
-        const field = self.decodeFieldSizeAndType();
+        const field = try self.decodeFieldSizeAndType();
         return try self.decodeStruct(allocator, T, field);
     }
 
@@ -119,7 +120,7 @@ pub const Decoder = struct {
     // Skips a value in the database without decoding it.
     // This is used when the database has fields that don't exist in the target struct.
     fn skipValue(self: *Decoder) !void {
-        const field = self.decodeFieldSizeAndType();
+        const field = try self.decodeFieldSizeAndType();
 
         if (field.type == FieldType.Pointer) {
             const next_offset = self.decodePointer(field.size);
@@ -157,7 +158,7 @@ pub const Decoder = struct {
 
     // Decodes a struct's field value which can be a built-in data type or another struct.
     fn decodeValue(self: *Decoder, allocator: std.mem.Allocator, comptime T: type) !T {
-        const field = self.decodeFieldSizeAndType();
+        const field = try self.decodeFieldSizeAndType();
 
         // Pointer
         if (field.type == FieldType.Pointer) {
@@ -172,12 +173,10 @@ pub const Decoder = struct {
         }
 
         return switch (T) {
-            // String
-            []const u8 => if (field.type == FieldType.String) self.decodeBytes(field.size) else DecodeError.ExpectedString,
+            // String or Bytes
+            []const u8 => if (field.type == .String or field.type == .Bytes) self.decodeBytes(field.size) else DecodeError.ExpectedStringOrBytes,
             // Double
-            f64 => if (field.type == FieldType.Double) self.decodeDouble(field.size) else DecodeError.ExpectedDouble,
-            // Bytes
-            []u8 => if (field.type == FieldType.Bytes) self.decodeBytes(field.size) else DecodeError.ExpectedBytes,
+            f64 => if (field.type == FieldType.Double) try self.decodeDouble(field.size) else DecodeError.ExpectedDouble,
             // Uint16
             u16 => if (field.type == FieldType.Uint16) try self.decodeInteger(u16, field.size) else DecodeError.ExpectedUint16,
             // Uint32
@@ -191,7 +190,7 @@ pub const Decoder = struct {
             // Bool
             bool => if (field.type == FieldType.Bool) try self.decodeBool(field.size) else DecodeError.ExpectedBool,
             // Float
-            f32 => if (field.type == FieldType.Float) self.decodeFloat(field.size) else DecodeError.ExpectedFloat,
+            f32 => if (field.type == FieldType.Float) try self.decodeFloat(field.size) else DecodeError.ExpectedFloat,
             else => {
                 // We support Structs or Optional Structs only to safely decode arrays and hashmaps.
                 comptime var DecodedType: type = T;
@@ -279,7 +278,7 @@ pub const Decoder = struct {
 
     // Decodes a variable length byte sequence containing any sort of binary data.
     // If the length is zero then this a zero-length byte sequence.
-    fn decodeBytes(self: *Decoder, field_size: usize) []u8 {
+    fn decodeBytes(self: *Decoder, field_size: usize) []const u8 {
         const offset = self.offset;
         const new_offset = offset + field_size;
         self.offset = new_offset;
@@ -288,7 +287,11 @@ pub const Decoder = struct {
     }
 
     // Decodes IEEE-754 double (binary64) in big-endian format.
-    fn decodeDouble(self: *Decoder, field_size: usize) f64 {
+    fn decodeDouble(self: *Decoder, field_size: usize) !f64 {
+        if (field_size != 8) {
+            return DecodeError.InvalidDoubleSize;
+        }
+
         const new_offset = self.offset + field_size;
         const double_bytes = self.src[self.offset..new_offset];
         self.offset = new_offset;
@@ -308,7 +311,11 @@ pub const Decoder = struct {
     }
 
     // Decodes an IEEE-754 float (binary32) stored in big-endian format.
-    fn decodeFloat(self: *Decoder, field_size: usize) f32 {
+    fn decodeFloat(self: *Decoder, field_size: usize) !f32 {
+        if (field_size != 4) {
+            return DecodeError.InvalidFloatSize;
+        }
+
         const new_offset = self.offset + field_size;
         const float_bytes = self.src[self.offset..new_offset];
         self.offset = new_offset;
@@ -356,7 +363,7 @@ pub const Decoder = struct {
 
     // Decodes a control byte that provides information about the field's data type and payload size,
     // see https://maxmind.github.io/MaxMind-DB/#data-field-format.
-    fn decodeFieldSizeAndType(self: *Decoder) Field {
+    fn decodeFieldSizeAndType(self: *Decoder) !Field {
         const src = self.src;
         var offset = self.offset;
 
@@ -370,7 +377,13 @@ pub const Decoder = struct {
         // the actual type for the field.
         var field_type: FieldType = @enumFromInt(control_byte >> 5);
         if (field_type == FieldType.Extended) {
-            field_type = @enumFromInt(src[offset] + 7);
+            // Extended types are 7 (Map) through 15 (Float), so valid extended byte values are 0-8.
+            const ext_byte = src[offset];
+            if (ext_byte > 8) {
+                return DecodeError.UnsupportedFieldType;
+            }
+
+            field_type = @enumFromInt(ext_byte + 7);
             offset += 1;
         }
 
@@ -387,7 +400,7 @@ pub const Decoder = struct {
         // The next five bits in the control byte tell you how long the data field's payload is,
         // except for maps and pointers.
         const field_size: usize = control_byte & 0b11111;
-        if (field_type == FieldType.Extended) {
+        if (field_type == FieldType.Pointer) {
             return field_size;
         }
 
@@ -407,8 +420,35 @@ pub const Decoder = struct {
     }
 };
 
+test "decodeFieldSize returns raw size for pointer type" {
+    // The pointer control byte layout is 001SSVVV where SS is the pointer size
+    // indicator (0-3) and VVV are the 3 value bits used for 1-3 byte pointers.
+    // For 4-byte pointers (SS=11) the spec says VVV bits are ignored,
+    // meaning a writer may set them to any value.
+    //
+    // The lower 5 bits (SSVVV) must not go through the payload size extension
+    // logic (which triggers at values 29, 30, 31) because they encode pointer
+    // metadata, not a payload size.
+    //
+    // Previously decodeFieldSize had a dead code check for FieldType.Extended
+    // (which was already resolved by decodeFieldSizeAndType before this call).
+    // It was replaced with FieldType.Pointer to skip the size extension.
+    //
+    // This test uses SS=11, VVV=101 giving the 5-bit value 11_101=29.
+    // Without the Pointer check, size extension would read 0xAA as an extra
+    // byte, corrupt the size, and advance the offset.
+    var d = Decoder{
+        .src = &.{ 0b001_11_101, 0xAA, 0xBB, 0xCC },
+        .offset = 0,
+    };
+    const size = d.decodeFieldSize(0b001_11_101, .Pointer);
+    try std.testing.expectEqual(29, size);
+    // Offset must not advance, i.e., no extra bytes read for size extension.
+    try std.testing.expectEqual(0, d.offset);
+}
+
 // Converts the bytes slice to usize.
-pub fn toUsize(bytes: []u8, prefix: usize) usize {
+pub fn toUsize(bytes: []const u8, prefix: usize) usize {
     var val = prefix;
     for (bytes) |b| {
         val = (val << 8) | b;
