@@ -44,6 +44,10 @@ pub const Metadata = struct {
 
 const data_section_separator_size = 16;
 
+pub const Options = struct {
+    only: ?decoder.Fields = null,
+};
+
 pub const Reader = struct {
     mapped_file: ?std.fs.File,
     src: []const u8,
@@ -66,7 +70,7 @@ pub const Reader = struct {
             .src = src[metadata_start..],
             .offset = 0,
         };
-        const metadata = try d.decodeRecord(allocator, Metadata);
+        const metadata = try d.decodeRecord(allocator, Metadata, null);
         errdefer metadata.deinit();
 
         const search_tree_size = try std.math.mul(
@@ -115,7 +119,7 @@ pub const Reader = struct {
             .src = src[metadata_start..],
             .offset = 0,
         };
-        const metadata = try d.decodeRecord(allocator, Metadata);
+        const metadata = try d.decodeRecord(allocator, Metadata, null);
         errdefer metadata.deinit();
 
         const search_tree_size = try std.math.mul(
@@ -155,8 +159,9 @@ pub const Reader = struct {
     pub fn lookup(
         self: *Reader,
         allocator: std.mem.Allocator,
-        comptime T: type,
+        T: type,
         address: *const std.net.Address,
+        options: Options,
     ) !T {
         const ip_bytes = net.ipToBytes(address);
         const pointer, _ = try self.findAddressInTree(ip_bytes);
@@ -164,15 +169,16 @@ pub const Reader = struct {
             return ReadError.AddressNotFound;
         }
 
-        return try self.resolveDataPointerAndDecode(allocator, T, pointer);
+        return try self.resolveDataPointerAndDecode(allocator, T, pointer, options.only);
     }
 
     // Iterates over blocks of IP networks.
     pub fn within(
         self: *Reader,
         allocator: std.mem.Allocator,
-        comptime T: type,
+        T: type,
         network: net.Network,
+        options: Options,
     ) !Iterator(T) {
         const ip_bytes = net.IP.init(network.ip);
         const prefix_len: usize = network.prefix_len;
@@ -218,14 +224,16 @@ pub const Reader = struct {
             .node_count = node_count,
             .stack = stack,
             .allocator = allocator,
+            .fields = options.only,
         };
     }
 
     fn resolveDataPointerAndDecode(
         self: *Reader,
         allocator: std.mem.Allocator,
-        comptime T: type,
+        T: type,
         pointer: usize,
+        fields: ?decoder.Fields,
     ) !T {
         const record_offset = try self.resolveDataPointer(pointer);
 
@@ -234,7 +242,7 @@ pub const Reader = struct {
             .offset = record_offset,
         };
 
-        return try d.decodeRecord(allocator, T);
+        return try d.decodeRecord(allocator, T, fields);
     }
 
     fn resolveDataPointer(self: *Reader, pointer: usize) !usize {
@@ -351,12 +359,13 @@ const WithinNode = struct {
     node: usize,
 };
 
-pub fn Iterator(comptime T: type) type {
+pub fn Iterator(T: type) type {
     return struct {
         reader: *Reader,
         node_count: usize,
         stack: std.ArrayList(WithinNode),
         allocator: std.mem.Allocator,
+        fields: ?decoder.Fields,
 
         const Self = @This();
 
@@ -387,6 +396,7 @@ pub fn Iterator(comptime T: type) type {
                         allocator,
                         T,
                         current.node,
+                        self.fields,
                     );
 
                     return Item{
