@@ -5,6 +5,29 @@ pub const Network = struct {
     ip: std.net.Address,
     prefix_len: usize = 0,
 
+    pub const all_ipv4 = Network{
+        .ip = std.net.Address.parseIp("0.0.0.0", 0) catch unreachable,
+    };
+    pub const all_ipv6 = Network{
+        .ip = std.net.Address.parseIp("::", 0) catch unreachable,
+    };
+
+    // Parses an IP address or CIDR string like "1.0.0.0/24".
+    pub fn parse(s: []const u8) !Network {
+        if (std.mem.indexOfScalar(u8, s, '/')) |sep| {
+            const ip = try std.net.Address.parseIp(s[0..sep], 0);
+            const prefix_len = try std.fmt.parseInt(usize, s[sep + 1 ..], 10);
+            return .{
+                .ip = ip,
+                .prefix_len = prefix_len,
+            };
+        }
+
+        return .{
+            .ip = try std.net.Address.parseIp(s, 0),
+        };
+    }
+
     pub fn format(self: Network, writer: anytype) !void {
         switch (self.ip.any.family) {
             std.posix.AF.INET => {
@@ -42,7 +65,7 @@ pub const Network = struct {
     }
 };
 
-test Network {
+test "Network.format" {
     const tests = [_]struct {
         addr: []const u8,
         want: []const u8,
@@ -66,6 +89,21 @@ test Network {
         const got = try std.fmt.bufPrint(&buf, "{f}", .{addr});
         try std.testing.expectEqualStrings(tc.want, got);
     }
+}
+
+test "Network.parse" {
+    var buf: [128]u8 = undefined;
+
+    const v4 = try Network.parse("1.0.0.0/24");
+    const got_v4 = try std.fmt.bufPrint(&buf, "{f}", .{v4});
+    try std.testing.expectEqualStrings("1.0.0.0/24", got_v4);
+
+    const v6 = try Network.parse("2001:db8::/32");
+    const got_v6 = try std.fmt.bufPrint(&buf, "{f}", .{v6});
+    try std.testing.expectEqualStrings("2001:0db8:0000:0000:0000:0000:0000:0000/32", got_v6);
+
+    const no_cidr = try Network.parse("10.0.0.1");
+    try std.testing.expectEqual(0, no_cidr.prefix_len);
 }
 
 // Represents IPv4 or IPv6 bytes.
@@ -116,12 +154,7 @@ pub const IP = union(enum) {
                 // IPv4 in IPv6 form.
                 if (std.mem.allEqual(u8, b[0..12], 0) and prefix_len >= 96) {
                     return .{
-                        .ip = std.net.Address.initIp4([4]u8{
-                            b[12],
-                            b[13],
-                            b[14],
-                            b[15],
-                        }, 0),
+                        .ip = std.net.Address.initIp4(b[12..16].*, 0),
                         .prefix_len = prefix_len - 96,
                     };
                 }
@@ -139,9 +172,7 @@ pub const IP = union(enum) {
 // is converted into [16 0 10 195 34 162 0 0 0 0 75 60 5 4 18 52].
 pub fn ipToBytes(address: *const std.net.Address) []const u8 {
     return switch (address.any.family) {
-        std.posix.AF.INET => {
-            return std.mem.asBytes(&address.in.sa.addr);
-        },
+        std.posix.AF.INET => std.mem.asBytes(&address.in.sa.addr),
         std.posix.AF.INET6 => &address.in6.sa.addr,
         else => unreachable,
     };

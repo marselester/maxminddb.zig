@@ -76,7 +76,7 @@ pub const Reader = struct {
         const search_tree_size = try std.math.mul(
             usize,
             metadata.node_count,
-            @as(usize, metadata.record_size) / 4,
+            metadata.record_size / 4,
         );
         const data_offset = search_tree_size + data_section_separator_size;
         if (data_offset > src.len) {
@@ -125,7 +125,7 @@ pub const Reader = struct {
         const search_tree_size = try std.math.mul(
             usize,
             metadata.node_count,
-            @as(usize, metadata.record_size) / 4,
+            metadata.record_size / 4,
         );
         const data_offset = search_tree_size + data_section_separator_size;
         if (data_offset > src.len) {

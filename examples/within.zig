@@ -11,9 +11,11 @@ pub fn main() !void {
     var db = try maxminddb.Reader.mmap(allocator, db_path);
     defer db.unmap();
 
-    const network = maxminddb.Network{
-        .ip = try std.net.Address.parseIp("0.0.0.0", 0),
-    };
+    const network = if (db.metadata.ip_version == 4)
+        maxminddb.Network.all_ipv4
+    else
+        maxminddb.Network.all_ipv6;
+
     var it = try db.within(allocator, maxminddb.geolite2.City, network, .{});
     defer it.deinit();
 
@@ -31,24 +33,21 @@ pub fn main() !void {
         }
 
         if (city.len != 0) {
-            std.debug.print("{f}/{d} {s}-{s}-{s}\n", .{
-                item.net.ip,
-                item.net.prefix_len,
+            std.debug.print("{f} {s}-{s}-{s}\n", .{
+                item.net,
                 continent,
                 country,
                 city,
             });
         } else if (country.len != 0) {
-            std.debug.print("{f}/{d} {s}-{s}\n", .{
-                item.net.ip,
-                item.net.prefix_len,
+            std.debug.print("{f} {s}-{s}\n", .{
+                item.net,
                 continent,
                 country,
             });
         } else if (continent.len != 0) {
-            std.debug.print("{f}/{d} {s}\n", .{
-                item.net.ip,
-                item.net.prefix_len,
+            std.debug.print("{f} {s}\n", .{
+                item.net,
                 continent,
             });
         }
