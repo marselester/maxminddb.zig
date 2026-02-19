@@ -12,6 +12,8 @@ pub const Reader = reader.Reader;
 pub const Metadata = reader.Metadata;
 pub const Iterator = reader.Iterator;
 pub const Network = net.Network;
+pub const Options = reader.Options;
+pub const Fields = decoder.Fields;
 
 /// Maps the metadata.database_type to a known GeoLite/GeoIP record type.
 pub const DatabaseType = enum {
@@ -137,7 +139,7 @@ test "GeoLite2 Country" {
     try expectEqual(DatabaseType.geolite_country, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(allocator, geolite2.Country, &ip);
+    const got = try db.lookup(allocator, geolite2.Country, &ip, .{});
     defer got.deinit();
 
     try expectEqualStrings("EU", got.continent.code);
@@ -179,7 +181,7 @@ test "GeoLite2 City" {
     try expectEqual(DatabaseType.geolite_city, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(allocator, geolite2.City, &ip);
+    const got = try db.lookup(allocator, geolite2.City, &ip, .{});
     defer got.deinit();
 
     try expectEqual(2694762, got.city.geoname_id);
@@ -250,7 +252,7 @@ test "GeoLite2 ASN" {
     try expectEqual(DatabaseType.geolite_asn, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(allocator, geolite2.ASN, &ip);
+    const got = try db.lookup(allocator, geolite2.ASN, &ip, .{});
 
     const want = geolite2.ASN{
         .autonomous_system_number = 29518,
@@ -269,7 +271,7 @@ test "GeoIP2 Country" {
     try expectEqual(DatabaseType.geoip_country, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(allocator, geoip2.Country, &ip);
+    const got = try db.lookup(allocator, geoip2.Country, &ip, .{});
     defer got.deinit();
 
     try expectEqualStrings("EU", got.continent.code);
@@ -308,7 +310,7 @@ test "GeoIP2 Country" {
     );
 
     const ip2 = try std.net.Address.parseIp("214.1.1.0", 0);
-    const got2 = try db.lookup(allocator, geoip2.Country, &ip2);
+    const got2 = try db.lookup(allocator, geoip2.Country, &ip2, .{});
     defer got2.deinit();
 
     try expectEqual(true, got2.traits.is_anycast);
@@ -322,7 +324,7 @@ test "GeoIP2 Country RepresentedCountry" {
     defer db.unmap();
 
     const ip = try std.net.Address.parseIp("202.196.224.0", 0);
-    const got = try db.lookup(allocator, geoip2.Country, &ip);
+    const got = try db.lookup(allocator, geoip2.Country, &ip, .{});
     defer got.deinit();
 
     try expectEqualStrings("AS", got.continent.code);
@@ -349,7 +351,7 @@ test "GeoIP2 City" {
     try expectEqual(DatabaseType.geoip_city, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(allocator, geoip2.City, &ip);
+    const got = try db.lookup(allocator, geoip2.City, &ip, .{});
     defer got.deinit();
 
     try expectEqual(2694762, got.city.geoname_id);
@@ -417,7 +419,7 @@ test "GeoIP2 City" {
     );
 
     const ip2 = try std.net.Address.parseIp("214.1.1.0", 0);
-    const got2 = try db.lookup(allocator, geoip2.City, &ip2);
+    const got2 = try db.lookup(allocator, geoip2.City, &ip2, .{});
     defer got2.deinit();
 
     try expectEqual(true, got2.traits.is_anycast);
@@ -433,7 +435,7 @@ test "GeoIP2 Enterprise" {
     try expectEqual(DatabaseType.geoip_enterprise, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("74.209.24.0", 0);
-    const got = try db.lookup(allocator, geoip2.Enterprise, &ip);
+    const got = try db.lookup(allocator, geoip2.Enterprise, &ip, .{});
     defer got.deinit();
 
     try expectEqual(11, got.city.confidence);
@@ -519,7 +521,7 @@ test "GeoIP2 Enterprise" {
     );
 
     const ip2 = try std.net.Address.parseIp("214.1.1.0", 0);
-    const got2 = try db.lookup(allocator, geoip2.Enterprise, &ip2);
+    const got2 = try db.lookup(allocator, geoip2.Enterprise, &ip2, .{});
     defer got2.deinit();
 
     try expectEqual(true, got2.traits.is_anycast);
@@ -535,7 +537,7 @@ test "GeoIP2 ISP" {
     try expectEqual(DatabaseType.geoip_isp, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("149.101.100.0", 0);
-    const got = try db.lookup(allocator, geoip2.ISP, &ip);
+    const got = try db.lookup(allocator, geoip2.ISP, &ip, .{});
 
     const want = geoip2.ISP{
         .autonomous_system_number = 6167,
@@ -558,7 +560,7 @@ test "GeoIP2 Connection-Type" {
     try expectEqual(DatabaseType.geoip_connection_type, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("96.1.20.112", 0);
-    const got = try db.lookup(allocator, geoip2.ConnectionType, &ip);
+    const got = try db.lookup(allocator, geoip2.ConnectionType, &ip, .{});
 
     const want = geoip2.ConnectionType{
         .connection_type = "Cable/DSL",
@@ -576,7 +578,7 @@ test "GeoIP2 Anonymous-IP" {
     try expectEqual(DatabaseType.geoip_anonymous_ip, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("81.2.69.0", 0);
-    const got = try db.lookup(allocator, geoip2.AnonymousIP, &ip);
+    const got = try db.lookup(allocator, geoip2.AnonymousIP, &ip, .{});
 
     const want = geoip2.AnonymousIP{
         .is_anonymous = true,
@@ -599,7 +601,7 @@ test "GeoIP Anonymous-Plus" {
     try expectEqual(DatabaseType.geoip_anonymous_plus, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("1.2.0.1", 0);
-    const got = try db.lookup(allocator, geoip2.AnonymousPlus, &ip);
+    const got = try db.lookup(allocator, geoip2.AnonymousPlus, &ip, .{});
 
     const want = geoip2.AnonymousPlus{
         .anonymizer_confidence = 30,
@@ -621,7 +623,7 @@ test "GeoIP2 DensityIncome" {
     try expectEqual(DatabaseType.geoip_densityincome, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("5.83.124.123", 0);
-    const got = try db.lookup(allocator, geoip2.DensityIncome, &ip);
+    const got = try db.lookup(allocator, geoip2.DensityIncome, &ip, .{});
 
     const want = geoip2.DensityIncome{
         .average_income = 32323,
@@ -640,7 +642,7 @@ test "GeoIP2 Domain" {
     try expectEqual(DatabaseType.geoip_domain, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("66.92.80.123", 0);
-    const got = try db.lookup(allocator, geoip2.Domain, &ip);
+    const got = try db.lookup(allocator, geoip2.Domain, &ip, .{});
 
     const want = geoip2.Domain{
         .domain = "speakeasy.net",
@@ -658,7 +660,7 @@ test "GeoIP2 IP-Risk" {
     try expectEqual(DatabaseType.geoip_ip_risk, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("6.1.2.1", 0);
-    const got = try db.lookup(allocator, geoip2.IPRisk, &ip);
+    const got = try db.lookup(allocator, geoip2.IPRisk, &ip, .{});
 
     const want = geoip2.IPRisk{
         .anonymizer_confidence = 95,
@@ -671,7 +673,7 @@ test "GeoIP2 IP-Risk" {
     try expectEqualDeep(want, got);
 
     const ip2 = try std.net.Address.parseIp("214.2.3.5", 0);
-    const got2 = try db.lookup(allocator, geoip2.IPRisk, &ip2);
+    const got2 = try db.lookup(allocator, geoip2.IPRisk, &ip2, .{});
 
     const want2 = geoip2.IPRisk{
         .ip_risk = 90,
@@ -693,7 +695,7 @@ test "GeoIP2 Static-IP-Score" {
     try expectEqual(DatabaseType.geoip_static_ip_score, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("1.2.3.4", 0);
-    const got = try db.lookup(allocator, geoip2.StaticIPScore, &ip);
+    const got = try db.lookup(allocator, geoip2.StaticIPScore, &ip, .{});
 
     const want = geoip2.StaticIPScore{
         .score = 0.05,
@@ -711,11 +713,59 @@ test "GeoIP2 User-Count" {
     try expectEqual(DatabaseType.geoip_user_count, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("1.2.3.4", 0);
-    const got = try db.lookup(allocator, geoip2.UserCount, &ip);
+    const got = try db.lookup(allocator, geoip2.UserCount, &ip, .{});
 
     const want = geoip2.UserCount{
         .ipv4_24 = 4,
         .ipv4_32 = 3,
     };
     try expectEqualDeep(want, got);
+}
+
+test "lookup with Fields filtering" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+    );
+    defer db.unmap();
+
+    const ip = try std.net.Address.parseIp("89.160.20.128", 0);
+
+    const fields = Fields.from(geolite2.City, &.{ "city", "country" });
+    const got = try db.lookup(allocator, geolite2.City, &ip, .{ .only = fields });
+    defer got.deinit();
+
+    // Filtered fields are decoded.
+    try expectEqual(2694762, got.city.geoname_id);
+    try expectEqual(2661886, got.country.geoname_id);
+    try expectEqualStrings("SE", got.country.iso_code);
+
+    // Non-filtered fields remain at defaults.
+    try expectEqualStrings("", got.continent.code);
+    try expectEqual(0, got.continent.geoname_id);
+    try expectEqualDeep(geolite2.City.Location{}, got.location);
+    try expectEqualDeep(geolite2.City.Postal{}, got.postal);
+}
+
+test "lookup with custom record" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+    );
+    defer db.unmap();
+
+    const MyCity = struct {
+        city: struct {
+            geoname_id: u32 = 0,
+            names: struct {
+                en: []const u8 = "",
+            } = .{},
+        } = .{},
+    };
+
+    const ip = try std.net.Address.parseIp("89.160.20.128", 0);
+    const got = try db.lookup(allocator, MyCity, &ip, .{});
+
+    try expectEqual(2694762, got.city.geoname_id);
+    try expectEqualStrings("Linköping", got.city.names.en);
 }

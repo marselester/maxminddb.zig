@@ -14,7 +14,7 @@ pub fn main() !void {
     const network = maxminddb.Network{
         .ip = try std.net.Address.parseIp("0.0.0.0", 0),
     };
-    var it = try db.within(allocator, maxminddb.geolite2.City, network);
+    var it = try db.within(allocator, maxminddb.geolite2.City, network, .{});
     defer it.deinit();
 
     // Note, for better performance use arena allocator and reset it after calling it.next().

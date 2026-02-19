@@ -48,9 +48,31 @@ See [examples](./examples/).
 Try `ArenaAllocator` to get ~3% improvement in lookups per second (639,848 vs 659,630) as
 tested on Intel i5-10600, see [examples/benchmark.zig](./examples/benchmark.zig).
 
-If you don't need all the struct fields, define your own one.
-For example, commenting out all the `geolite2.City`'s fields but `geolite2.City.names`
-increases throughput by 60% (639,848 vs 1,025,477 lookups per second).
+If you don't need all the struct fields, use `Options.only` to decode top-level fields you want.
+Here is how you can decode `City.city` and `City.country` fields.
+
+```zig
+// This gets us ~34% of performance gains, i.e., ~859K lookups per second.
+const fields = maxminddb.Fields.from(maxminddb.geolite2.City, &.{ "city", "country" });
+const city = try db.lookup(allocator, maxminddb.geolite2.City, &ip, .{ .only = fields });
+```
+
+Alternatively, define your own struct.
+
+```zig
+const MyCity = struct {
+    city: struct {
+        geoname_id: u32 = 0,
+        names: struct {
+            en: []const u8 = "",
+        } = .{},
+    } = .{},
+};
+
+const city = try db.lookup(allocator, MyCity, &ip, .{});
+```
+
+Decoding `MyCity` increases throughput by up to 60% (639,848 vs 1,025,477 lookups per second).
 
 ```sh
 $ zig build example_benchmark
@@ -104,7 +126,30 @@ Lookups Per Second (avg):659630.0703668359
 
 <details>
 
-<summary>Decoding names only</summary>
+<summary>Decoding city/country</summary>
+
+```sh
+Benchmarking with:
+  Database: GeoLite2-City.mmdb
+  Lookups:  1000000
+Opening database...
+Database opened successfully in 0.050771 ms. Type: GeoLite2-City
+Starting benchmark...
+
+--- Benchmark Finished ---
+Total Lookups Attempted: 1000000
+Successful Lookups:      858259
+IPs Not Found:           141741
+Lookup Errors:           0
+Elapsed Time:            1.164061419 s
+Lookups Per Second (avg):859061.2004468469
+```
+
+</details>
+
+<details>
+
+<summary>Decoding city name</summary>
 
 ```sh
 Benchmarking with:

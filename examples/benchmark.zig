@@ -50,7 +50,7 @@ pub fn main() !void {
         std.crypto.random.bytes(&ip_bytes);
         const ip = std.net.Address.initIp4(ip_bytes, 0);
 
-        _ = db.lookup(arena_allocator, maxminddb.geolite2.City, &ip) catch |err| {
+        _ = db.lookup(arena_allocator, maxminddb.geolite2.City, &ip, .{}) catch |err| {
             switch (err) {
                 maxminddb.Error.AddressNotFound => {
                     not_found_count += 1;
