@@ -49,7 +49,7 @@ const DataField = struct {
 
 /// Fields is a bitmask for selecting which top-level struct fields to decode.
 /// It also provides struct introspection helpers that skip underscore-prefixed
-/// internal fields (e.g., _arena): count, index, and entries.
+/// internal fields: count, index, and entries.
 pub const Fields = struct {
     mask: u64 = 0,
 
@@ -143,7 +143,7 @@ pub const Decoder = struct {
     // This means that strings such as geolite2.City.postal.code are backed by the src's array,
     // so the caller should create a copy of the record when the src is freed (when the database is closed).
     //
-    // When fields is set, only top-level fields whose bit is set are decoded; others are skipped.
+    // When fields provided, only top-level fields whose bit is set are decoded; others are skipped.
     pub fn decodeRecord(
         self: *Decoder,
         allocator: std.mem.Allocator,
@@ -156,7 +156,7 @@ pub const Decoder = struct {
 
     fn decodeStruct(
         self: *Decoder,
-        parent_allocator: std.mem.Allocator,
+        allocator: std.mem.Allocator,
         T: type,
         data_field: DataField,
         fields: ?Fields,
@@ -165,22 +165,9 @@ pub const Decoder = struct {
             return DecodeError.ExpectedStructType;
         }
 
-        // The decoded record (e.g., geolite2.City) must be initialized with an allocator,
-        // so the caller could free the memory when the record is no longer needed.
-        // Record's inner structs will use the same allocator.
-        //
         // Note, all the record's fields must be defined, i.e., .{ .some_field = undefined }
         // could contain garbage if the field wasn't found in the database and therefore not decoded.
-        var record: T = undefined;
-        var allocator = parent_allocator;
-        if (@hasDecl(T, "init")) {
-            record = T.init(allocator);
-            allocator = record._arena.allocator();
-        } else {
-            record = .{};
-        }
-        // Free the record if decoding has failed.
-        errdefer if (@hasDecl(T, "init")) record.deinit();
+        var record: T = .{};
 
         // Maps use the size in the control byte (and any following bytes) to indicate
         // the number of key/value pairs in the map, not the size of the payload in bytes.
@@ -195,7 +182,7 @@ pub const Decoder = struct {
 
             var found = false;
             inline for (std.meta.fields(T)) |f| {
-                // Skip struct fields whose name starts with an underscore, e.g., _arena.
+                // Skip struct fields whose name starts with an underscore.
                 if (f.name[0] == '_') {
                     continue;
                 }
@@ -283,7 +270,7 @@ pub const Decoder = struct {
 
         return switch (T) {
             // String or Bytes
-            []const u8 => if (field.type == .String or field.type == .Bytes) self.decodeBytes(field.size) else DecodeError.ExpectedStringOrBytes,
+            []const u8 => if (field.type == FieldType.String or field.type == FieldType.Bytes) self.decodeBytes(field.size) else DecodeError.ExpectedStringOrBytes,
             // Double
             f64 => if (field.type == FieldType.Double) try self.decodeDouble(field.size) else DecodeError.ExpectedDouble,
             // Uint16
@@ -361,7 +348,7 @@ pub const Decoder = struct {
                 }
 
                 // Decode Map into a struct, e.g., geolite2.City.continent.
-                // Nested structs are always fully decoded (no field mask).
+                // Nested structs are always fully decoded (no Fields mask).
                 return try self.decodeStruct(allocator, T, field, null);
             },
         };

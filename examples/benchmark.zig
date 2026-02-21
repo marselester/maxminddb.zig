@@ -50,19 +50,15 @@ pub fn main() !void {
         std.crypto.random.bytes(&ip_bytes);
         const ip = std.net.Address.initIp4(ip_bytes, 0);
 
-        _ = db.lookup(arena_allocator, maxminddb.geolite2.City, &ip, .{}) catch |err| {
-            switch (err) {
-                maxminddb.Error.AddressNotFound => {
-                    not_found_count += 1;
-                    continue;
-                },
-                else => {
-                    std.debug.print("! Lookup error for IP {any}: {any}\n", .{ ip, err });
-                    lookup_errors += 1;
-                    continue;
-                },
-            }
+        const result = db.lookup(arena_allocator, maxminddb.geolite2.City, ip, .{}) catch |err| {
+            std.debug.print("! Lookup error for IP {any}: {any}\n", .{ ip, err });
+            lookup_errors += 1;
+            continue;
         };
+        if (result == null) {
+            not_found_count += 1;
+            continue;
+        }
         _ = arena.reset(std.heap.ArenaAllocator.ResetMode.retain_capacity);
     }
 

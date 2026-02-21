@@ -7,12 +7,10 @@ pub const Names = std.StringArrayHashMap([]const u8);
 /// It can be used for geolocation at the country-level for analytics, content customization,
 /// or compliance use cases in territories that are not disputed.
 pub const Country = struct {
-    continent: Self.Continent,
-    country: Self.Country,
-    registered_country: Self.Country,
-    represented_country: Self.RepresentedCountry,
-
-    _arena: std.heap.ArenaAllocator,
+    continent: Self.Continent = .{},
+    country: Self.Country = .{},
+    registered_country: Self.Country = .{},
+    represented_country: Self.RepresentedCountry = .{},
 
     const Self = @This();
     pub const Continent = struct {
@@ -33,39 +31,20 @@ pub const Country = struct {
         names: ?Names = null,
         type: []const u8 = "",
     };
-
-    pub fn init(allocator: std.mem.Allocator) Self {
-        const arena = std.heap.ArenaAllocator.init(allocator);
-
-        return .{
-            .continent = .{},
-            .country = .{},
-            .registered_country = .{},
-            .represented_country = .{},
-
-            ._arena = arena,
-        };
-    }
-
-    pub fn deinit(self: *const Self) void {
-        self._arena.deinit();
-    }
 };
 
 /// City represents a record in the GeoLite2-City database, for example,
 /// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoLite2-City-Test.json.
 /// It can be used for geolocation down to the city or postal code for analytics and content customization.
 pub const City = struct {
-    city: Self.City,
-    continent: Country.Continent,
-    country: Country.Country,
-    location: Self.Location,
-    postal: Self.Postal,
-    registered_country: Country.Country,
-    represented_country: Country.RepresentedCountry,
+    city: Self.City = .{},
+    continent: Country.Continent = .{},
+    country: Country.Country = .{},
+    location: Self.Location = .{},
+    postal: Self.Postal = .{},
+    registered_country: Country.Country = .{},
+    represented_country: Country.RepresentedCountry = .{},
     subdivisions: ?std.ArrayList(Self.Subdivision) = null,
-
-    _arena: std.heap.ArenaAllocator,
 
     const Self = @This();
     pub const City = struct {
@@ -87,26 +66,6 @@ pub const City = struct {
         iso_code: []const u8 = "",
         names: ?Names = null,
     };
-
-    pub fn init(allocator: std.mem.Allocator) Self {
-        const arena = std.heap.ArenaAllocator.init(allocator);
-
-        return .{
-            .city = .{},
-            .continent = .{},
-            .country = .{},
-            .location = .{},
-            .postal = .{},
-            .registered_country = .{},
-            .represented_country = .{},
-
-            ._arena = arena,
-        };
-    }
-
-    pub fn deinit(self: *const Self) void {
-        self._arena.deinit();
-    }
 };
 
 /// Provides the autonomous system number and organization for IP addresses for analytics,
