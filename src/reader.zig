@@ -45,94 +45,96 @@ pub const Reader = struct {
     src: []const u8,
     offset: usize,
     ipv4_start: usize,
+    // ipv4_index contains a mix of node IDs and data offsets
+    // for fast lookup of IPv4 addresses by their first N bits.
+    // Instead of fetching the start node, then its right child, and so on,
+    // these paths are flattened into ipv4_index array for direct access with Eytzinger layout.
+    ipv4_index_first_n_bits: usize,
+    ipv4_index: ?[]usize,
     metadata: Metadata,
-    metadata_arena: std.heap.ArenaAllocator,
 
-    // Loads a MaxMind DB file into memory.
+    is_mapped: bool,
+    arena: *std.heap.ArenaAllocator,
+
+    fn init(arena: *std.heap.ArenaAllocator, src: []const u8) !Reader {
+        const metadata = try decodeMetadata(arena.allocator(), src);
+
+        const search_tree_size = try std.math.mul(
+            usize,
+            metadata.node_count,
+            metadata.record_size / 4,
+        );
+        const data_offset = search_tree_size + data_section_separator_size;
+        if (data_offset > src.len) {
+            return ReadError.CorruptedTree;
+        }
+
+        var r = Reader{
+            .src = src,
+            .offset = data_offset,
+            .ipv4_start = 0,
+            .ipv4_index_first_n_bits = 0,
+            .ipv4_index = null,
+            .metadata = metadata,
+            .is_mapped = false,
+            .arena = arena,
+        };
+
+        try r.setIPv4Start();
+
+        return r;
+    }
+
+    /// Loads a MaxMind DB file into memory.
     pub fn open(allocator: std.mem.Allocator, path: []const u8, max_db_size: usize) !Reader {
         var f = try std.fs.cwd().openFile(path, .{});
         defer f.close();
 
-        const src = try f.readToEndAlloc(allocator, max_db_size);
-        errdefer allocator.free(src);
-
-        var metadata_arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer metadata_arena.deinit();
-        const metadata = try decodeMetadata(metadata_arena.allocator(), src);
-
-        const search_tree_size = try std.math.mul(
-            usize,
-            metadata.node_count,
-            metadata.record_size / 4,
-        );
-        const data_offset = search_tree_size + data_section_separator_size;
-        if (data_offset > src.len) {
-            return ReadError.CorruptedTree;
+        const arena = try allocator.create(std.heap.ArenaAllocator);
+        errdefer {
+            arena.deinit();
+            allocator.destroy(arena);
         }
+        arena.* = std.heap.ArenaAllocator.init(allocator);
 
-        var r = Reader{
-            .src = src,
-            .offset = data_offset,
-            .ipv4_start = 0,
-            .metadata = metadata,
-            .metadata_arena = metadata_arena,
-        };
+        const src = try f.readToEndAlloc(arena.allocator(), max_db_size);
 
-        r.ipv4_start = try r.findIPv4Start();
-
-        return r;
+        return try init(arena, src);
     }
 
-    // Frees the memory occupied by the DB file.
-    // From this point all the DB records are unusable because their fields were backed by the same memory.
-    // Note, the records still have to be deinited since they might contain arrays or maps.
-    pub fn close(self: *Reader, allocator: std.mem.Allocator) void {
-        self.metadata_arena.deinit();
-        allocator.free(self.src);
-    }
-
-    // Maps a MaxMind DB file into memory.
+    /// Maps a MaxMind DB file into memory.
     pub fn mmap(allocator: std.mem.Allocator, path: []const u8) !Reader {
         const src = try memorymap.map(path);
         errdefer memorymap.unmap(src);
 
-        var metadata_arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer metadata_arena.deinit();
-        const metadata = try decodeMetadata(metadata_arena.allocator(), src);
-
-        const search_tree_size = try std.math.mul(
-            usize,
-            metadata.node_count,
-            metadata.record_size / 4,
-        );
-        const data_offset = search_tree_size + data_section_separator_size;
-        if (data_offset > src.len) {
-            return ReadError.CorruptedTree;
+        const arena = try allocator.create(std.heap.ArenaAllocator);
+        errdefer {
+            arena.deinit();
+            allocator.destroy(arena);
         }
+        arena.* = std.heap.ArenaAllocator.init(allocator);
 
-        var r = Reader{
-            .src = src,
-            .offset = data_offset,
-            .ipv4_start = 0,
-            .metadata = metadata,
-            .metadata_arena = metadata_arena,
-        };
-
-        r.ipv4_start = try r.findIPv4Start();
+        var r = try init(arena, src);
+        r.is_mapped = true;
 
         return r;
     }
 
-    // Unmaps the DB file.
-    // From this point all the DB records are unusable because their fields were backed by the same memory.
-    // Note, the records still have to be deinited since they might contain arrays or maps.
-    pub fn unmap(self: *Reader) void {
-        self.metadata_arena.deinit();
-        memorymap.unmap(self.src);
+    /// Frees the memory occupied by the DB file.
+    /// From this point all the DB records are unusable because their fields were backed by the same memory.
+    /// Note, the records still have to be deinited since they might contain arrays or maps.
+    pub fn close(self: *Reader) void {
+        const allocator = self.arena.child_allocator;
+        self.arena.deinit();
+        allocator.destroy(self.arena);
+
+        if (self.is_mapped) {
+            memorymap.unmap(self.src);
+        }
     }
 
-    // Looks up a value by an IP address.
-    // The returned Result owns an arena with all decoded allocations.
+    /// Looks up a value by an IP address.
+    /// The returned Result owns an arena with all decoded allocations.
     pub fn lookup(
         self: *Reader,
         allocator: std.mem.Allocator,
@@ -145,13 +147,22 @@ pub const Reader = struct {
             return ReadError.IPv6AddressInIPv4Database;
         }
 
-        const pointer, const prefix_len = try self.findAddressInTree(ip);
+        var pointer: usize = 0;
+        var prefix_len: usize = 0;
+        if (self.ipv4_index != null and ip == .v4) {
+            pointer, prefix_len = try self.findAddressInTreeWithIndex(ip);
+        } else {
+            const start_node = self.startNode(ip.bitCount());
+            pointer, prefix_len = try self.findAddressInTree(ip, start_node, 0);
+        }
+
         if (pointer == 0) {
             return null;
         }
 
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
+
         const value = try self.resolveDataPointerAndDecode(
             arena.allocator(),
             T,
@@ -166,7 +177,7 @@ pub const Reader = struct {
         };
     }
 
-    // Iterates over blocks of IP networks.
+    /// Iterates over blocks of IP networks.
     pub fn within(
         self: *Reader,
         allocator: std.mem.Allocator,
@@ -240,6 +251,61 @@ pub const Reader = struct {
         return try d.decodeRecord(allocator, Metadata, null);
     }
 
+    // Builds an IPv4 index that could yield almost 30% faster lookups for IPv4 addresses,
+    // but increases memory usage, e.g., if we index first 16 bits, the index size is ~1 MB.
+    pub fn buildIPv4Index(self: *Reader, index_first_n_bits: usize) !void {
+        self.ipv4_index_first_n_bits = index_first_n_bits;
+
+        self.ipv4_index = try self.arena.allocator().alloc(
+            usize,
+            std.math.shl(usize, 1, index_first_n_bits + 1),
+        );
+        errdefer self.ipv4_index = null;
+
+        try self.populateIndex(self.ipv4_start, 1, 0);
+    }
+
+    fn populateIndex(
+        self: *Reader,
+        node: usize,
+        index_pos: usize,
+        bit_depth: usize,
+    ) !void {
+        // If we've reached the max bit index depth, store the node.
+        if (bit_depth == self.ipv4_index_first_n_bits) {
+            self.ipv4_index.?[index_pos] = node;
+            return;
+        }
+
+        // If the node is terminal (it's a data pointer or empty),
+        // fill all descendants at the max bit index depth with that node ID.
+        if (node >= self.metadata.node_count) {
+            const start: usize = std.math.shl(
+                usize,
+                index_pos,
+                self.ipv4_index_first_n_bits - bit_depth,
+            );
+            const count: usize = std.math.shl(
+                usize,
+                1,
+                self.ipv4_index_first_n_bits - bit_depth,
+            );
+
+            var i: usize = 0;
+            while (i < count) : (i += 1) {
+                self.ipv4_index.?[start + i] = node;
+            }
+
+            return;
+        }
+
+        const left_node = try self.readNode(node, 0);
+        try self.populateIndex(left_node, index_pos * 2, bit_depth + 1);
+
+        const right_node = try self.readNode(node, 1);
+        try self.populateIndex(right_node, index_pos * 2 + 1, bit_depth + 1);
+    }
+
     fn resolveDataPointerAndDecode(
         self: *Reader,
         allocator: std.mem.Allocator,
@@ -282,14 +348,43 @@ pub const Reader = struct {
         return d.isEmptyMap();
     }
 
-    fn findAddressInTree(self: *Reader, ip: net.IP) !struct { usize, usize } {
-        const bit_count = ip.bitCount();
-        var node = self.startNode(bit_count);
+    // Uses the Eytzinger index for fast IPv4 lookups.
+    // The index covers the first N bits of the IPv4 address, allowing us to
+    // skip directly to the node at depth N instead of traversing bit by bit.
+    fn findAddressInTreeWithIndex(self: *Reader, ip: net.IP) !struct { usize, usize } {
+        const ip_int = std.mem.readInt(u32, &ip.v4, .big);
+        const first_n_bits = std.math.shr(
+            usize,
+            ip_int,
+            32 - self.ipv4_index_first_n_bits,
+        );
+        const index_pos = std.math.shl(usize, 1, self.ipv4_index_first_n_bits) + first_n_bits;
 
+        var node = self.ipv4_index.?[index_pos];
+
+        // If we hit a terminal at or before bit N of IPv4, fall back to regular
+        // traversal to get the accurate prefix length.
+        if (node >= self.metadata.node_count) {
+            node = self.ipv4_start;
+            return try self.findAddressInTree(ip, node, 0);
+        }
+
+        // Continue traversal from where the index ends (bit N of IPv4 portion).
+        return try self.findAddressInTree(ip, node, self.ipv4_index_first_n_bits);
+    }
+
+    fn findAddressInTree(
+        self: *Reader,
+        ip: net.IP,
+        start_node: usize,
+        start_bit: usize,
+    ) !struct { usize, usize } {
+        const stop_bit = ip.bitCount();
         const node_count: usize = self.metadata.node_count;
-        var prefix_len = bit_count;
 
-        for (0..bit_count) |i| {
+        var node = start_node;
+        var prefix_len = stop_bit;
+        for (start_bit..stop_bit) |i| {
             if (node >= node_count) {
                 prefix_len = i;
                 break;
@@ -313,23 +408,22 @@ pub const Reader = struct {
         return if (length == 128) 0 else self.ipv4_start;
     }
 
-    fn findIPv4Start(self: *Reader) !usize {
+    fn setIPv4Start(self: *Reader) !void {
         if (self.metadata.ip_version != 6) {
-            return 0;
+            return;
         }
+
+        const node_count: usize = self.metadata.node_count;
 
         // We are looking up an IPv4 address in an IPv6 tree.
         // Skip over the first 96 nodes.
         var node: usize = 0;
-        for (0..96) |_| {
-            if (node >= self.metadata.node_count) {
-                break;
-            }
-
+        var i: usize = 0;
+        while (i < 96 and node < node_count) : (i += 1) {
             node = try self.readNode(node, 0);
         }
 
-        return node;
+        self.ipv4_start = node;
     }
 
     fn readNode(self: *Reader, node_number: usize, index: usize) !usize {

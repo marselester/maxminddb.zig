@@ -12,7 +12,7 @@ pub fn main() !void {
     const ip = if (args.len > 2) args[2] else "89.160.20.128";
 
     var db = try maxminddb.Reader.mmap(allocator, db_path);
-    defer db.unmap();
+    defer db.close();
 
     const result = try db.lookup(
         allocator,

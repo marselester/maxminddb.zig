@@ -11,7 +11,7 @@ pub fn main() !void {
     defer _ = gpa.detectLeaks();
 
     var db = try maxminddb.Reader.open(allocator, db_path, max_db_size);
-    defer db.close(allocator);
+    defer db.close();
 
     // Note, for better performance use arena allocator and reset it after calling lookup().
     // You won't need to call city.deinit() in that case.

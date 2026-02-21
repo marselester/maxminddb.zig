@@ -150,22 +150,22 @@ pub const IP = union(enum) {
             .v4 => |b| {
                 // Combines IP bytes into a big-endian u32, e.g.,
                 // 89.160.20.128 = 89 << 24 | 160 << 16 | 20 << 8 | 128
-                const ipAsNumber = std.mem.readInt(u32, &b, .big);
+                const ip_as_number = std.mem.readInt(u32, &b, .big);
                 const ones: u32 = std.math.maxInt(u32);
                 const bitmask = if (prefix_len == 0) 0 else ones << @intCast(32 - prefix_len);
 
                 var out: [4]u8 = undefined;
-                std.mem.writeInt(u32, &out, ipAsNumber & bitmask, .big);
+                std.mem.writeInt(u32, &out, ip_as_number & bitmask, .big);
 
                 return .{ .v4 = out };
             },
             .v6 => |b| {
-                const ipAsNumber = std.mem.readInt(u128, &b, .big);
+                const ip_as_number = std.mem.readInt(u128, &b, .big);
                 const ones: u128 = std.math.maxInt(u128);
                 const bitmask = if (prefix_len == 0) 0 else ones << @intCast(128 - prefix_len);
 
                 var out: [16]u8 = undefined;
-                std.mem.writeInt(u128, &out, ipAsNumber & bitmask, .big);
+                std.mem.writeInt(u128, &out, ip_as_number & bitmask, .big);
 
                 return .{ .v6 = out };
             },

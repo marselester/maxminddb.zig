@@ -36,13 +36,15 @@ pub fn main() !void {
 
     var open_timer = try std.time.Timer.start();
     var db = try maxminddb.Reader.mmap(allocator, db_path);
-    defer db.unmap();
+    defer db.close();
     const open_time_ms = @as(f64, @floatFromInt(open_timer.read())) /
         @as(f64, @floatFromInt(std.time.ns_per_ms));
     std.debug.print("Database opened successfully in {d} ms. Type: {s}\n", .{
         open_time_ms,
         db.metadata.database_type,
     });
+
+    try db.buildIPv4Index(16);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
