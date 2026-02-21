@@ -50,7 +50,7 @@ pub fn main() !void {
         std.crypto.random.bytes(&ip_bytes);
         const ip = std.net.Address.initIp4(ip_bytes, 0);
 
-        const result = db.lookup(arena_allocator, maxminddb.geolite2.City, &ip, .{}) catch |err| {
+        const result = db.lookup(arena_allocator, maxminddb.geolite2.City, ip, .{}) catch |err| {
             std.debug.print("! Lookup error for IP {any}: {any}\n", .{ ip, err });
             lookup_errors += 1;
             continue;
