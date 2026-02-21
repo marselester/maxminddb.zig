@@ -137,10 +137,10 @@ pub const Reader = struct {
         self: *Reader,
         allocator: std.mem.Allocator,
         T: type,
-        address: std.net.Address,
+        address: *const std.net.Address,
         options: Options,
     ) !?Result(T) {
-        const ip_bytes = net.ipToBytes(&address);
+        const ip_bytes = net.ipToBytes(address);
         const pointer, const prefix_len = try self.findAddressInTree(ip_bytes);
         if (pointer == 0) {
             return null;
@@ -156,7 +156,7 @@ pub const Reader = struct {
         );
 
         return .{
-            .network = net.IP.init(address).mask(prefix_len).network(prefix_len),
+            .network = net.IP.init(address.*).mask(prefix_len).network(prefix_len),
             .value = value,
             .arena = arena,
         };
