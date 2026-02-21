@@ -140,8 +140,8 @@ pub const Reader = struct {
         address: *const std.net.Address,
         options: Options,
     ) !?Result(T) {
-        const ip_bytes = net.ipToBytes(address);
-        const pointer, const prefix_len = try self.findAddressInTree(ip_bytes);
+        const ip = net.IP.init(address.*);
+        const pointer, const prefix_len = try self.findAddressInTree(ip);
         if (pointer == 0) {
             return null;
         }
@@ -156,7 +156,7 @@ pub const Reader = struct {
         );
 
         return .{
-            .network = net.IP.init(address.*).mask(prefix_len).network(prefix_len),
+            .network = ip.mask(prefix_len).network(prefix_len),
             .value = value,
             .arena = arena,
         };
@@ -263,8 +263,8 @@ pub const Reader = struct {
         return resolved;
     }
 
-    fn findAddressInTree(self: *Reader, ip_address: []const u8) !struct { usize, usize } {
-        const bit_count: usize = ip_address.len * 8;
+    fn findAddressInTree(self: *Reader, ip: net.IP) !struct { usize, usize } {
+        const bit_count = ip.bitCount();
         var node = self.startNode(bit_count);
 
         const node_count: usize = self.metadata.node_count;
@@ -276,9 +276,7 @@ pub const Reader = struct {
                 break;
             }
 
-            const bit = 1 & std.math.shr(usize, ip_address[i >> 3], 7 - (i % 8));
-
-            node = try self.readNode(node, bit);
+            node = try self.readNode(node, ip.bitAt(i));
         }
 
         if (node == node_count) {

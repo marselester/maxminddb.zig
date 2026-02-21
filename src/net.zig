@@ -266,34 +266,3 @@ test "IP.mask" {
         try std.testing.expectEqualStrings(tc.want, got);
     }
 }
-
-// Converts an IP address into bytes slice, e.g., IPv6 address 1000:0ac3:22a2:0000:0000:4b3c:0504:1234
-// is converted into [16 0 10 195 34 162 0 0 0 0 75 60 5 4 18 52].
-pub fn ipToBytes(address: *const std.net.Address) []const u8 {
-    return switch (address.any.family) {
-        std.posix.AF.INET => std.mem.asBytes(&address.in.sa.addr),
-        std.posix.AF.INET6 => &address.in6.sa.addr,
-        else => unreachable,
-    };
-}
-
-test "ipToBytes" {
-    const tests = [_]struct {
-        addr: []const u8,
-        want: []const u8,
-    }{
-        .{
-            .addr = "89.160.20.128",
-            .want = &.{ 89, 160, 20, 128 },
-        },
-        .{
-            .addr = "1000:0ac3:22a2:0000:0000:4b3c:0504:1234",
-            .want = &.{ 16, 0, 10, 195, 34, 162, 0, 0, 0, 0, 75, 60, 5, 4, 18, 52 },
-        },
-    };
-
-    for (tests) |tc| {
-        const addr = try std.net.Address.parseIp(tc.addr, 0);
-        try std.testing.expectEqualStrings(tc.want, ipToBytes(&addr));
-    }
-}
