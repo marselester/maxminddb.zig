@@ -796,3 +796,19 @@ test "lookup with custom record" {
     try expectEqual(2694762, got.value.city.geoname_id);
     try expectEqualStrings("Linköping", got.value.city.names.en);
 }
+
+test "within returns all networks" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+    );
+    defer db.unmap();
+
+    var it = try db.within(allocator, geolite2.City, net.Network.all_ipv6, .{});
+    defer it.deinit();
+
+    var n: usize = 0;
+    while (try it.next()) |_| : (n += 1) {}
+
+    try expectEqual(242, n);
+}
