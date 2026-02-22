@@ -54,7 +54,7 @@ Here is how you can decode `City.city` and `City.country` fields.
 ```zig
 // This gets us ~34% of performance gains, i.e., ~859K lookups per second.
 const fields = maxminddb.Fields.from(maxminddb.geolite2.City, &.{ "city", "country" });
-const city = try db.lookup(allocator, maxminddb.geolite2.City, &ip, .{ .only = fields });
+const city = try db.lookup(allocator, maxminddb.geolite2.City, ip, .{ .only = fields });
 ```
 
 Alternatively, define your own struct.
@@ -69,7 +69,7 @@ const MyCity = struct {
     } = .{},
 };
 
-const city = try db.lookup(allocator, MyCity, &ip, .{});
+const city = try db.lookup(allocator, MyCity, ip, .{});
 ```
 
 Decoding `MyCity` increases throughput by up to 60% (639,848 vs 1,025,477 lookups per second).

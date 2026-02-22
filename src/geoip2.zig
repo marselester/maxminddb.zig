@@ -8,13 +8,11 @@ pub const Names = std.StringArrayHashMap([]const u8);
 /// It can be used for geolocation at the country-level for analytics, content customization,
 /// or compliance use cases in territories that are not disputed.
 pub const Country = struct {
-    continent: Self.Continent,
-    country: Self.Country,
-    registered_country: Self.Country,
-    represented_country: Self.RepresentedCountry,
-    traits: Self.Traits,
-
-    _arena: std.heap.ArenaAllocator,
+    continent: Self.Continent = .{},
+    country: Self.Country = .{},
+    registered_country: Self.Country = .{},
+    represented_country: Self.RepresentedCountry = .{},
+    traits: Self.Traits = .{},
 
     const Self = @This();
     pub const Continent = struct {
@@ -38,24 +36,6 @@ pub const Country = struct {
     pub const Traits = struct {
         is_anycast: bool = false,
     };
-
-    pub fn init(allocator: std.mem.Allocator) Self {
-        const arena = std.heap.ArenaAllocator.init(allocator);
-
-        return .{
-            .continent = .{},
-            .country = .{},
-            .registered_country = .{},
-            .represented_country = .{},
-            .traits = .{},
-
-            ._arena = arena,
-        };
-    }
-
-    pub fn deinit(self: *const Self) void {
-        self._arena.deinit();
-    }
 };
 
 /// City represents a record in the GeoIP2-City database, for example,
@@ -63,17 +43,15 @@ pub const Country = struct {
 ///
 /// It can be used for geolocation down to the city or postal code for analytics and content customization.
 pub const City = struct {
-    city: Self.City,
-    continent: Country.Continent,
-    country: Country.Country,
-    location: Self.Location,
-    postal: Self.Postal,
-    registered_country: Country.Country,
-    represented_country: Country.RepresentedCountry,
+    city: Self.City = .{},
+    continent: Country.Continent = .{},
+    country: Country.Country = .{},
+    location: Self.Location = .{},
+    postal: Self.Postal = .{},
+    registered_country: Country.Country = .{},
+    represented_country: Country.RepresentedCountry = .{},
     subdivisions: ?std.ArrayList(Self.Subdivision) = null,
-    traits: Country.Traits,
-
-    _arena: std.heap.ArenaAllocator,
+    traits: Country.Traits = .{},
 
     const Self = @This();
     pub const City = struct {
@@ -95,27 +73,6 @@ pub const City = struct {
         iso_code: []const u8 = "",
         names: ?Names = null,
     };
-
-    pub fn init(allocator: std.mem.Allocator) Self {
-        const arena = std.heap.ArenaAllocator.init(allocator);
-
-        return .{
-            .city = .{},
-            .continent = .{},
-            .country = .{},
-            .location = .{},
-            .postal = .{},
-            .registered_country = .{},
-            .represented_country = .{},
-            .traits = .{},
-
-            ._arena = arena,
-        };
-    }
-
-    pub fn deinit(self: *const Self) void {
-        self._arena.deinit();
-    }
 };
 
 /// Enterprise represents a record in the GeoIP2-Enterprise database, for example,
@@ -123,17 +80,15 @@ pub const City = struct {
 /// Determine geolocation data such as country, region, state, city, ZIP/postal code,
 /// and additional intelligence such as confidence factors, ISP, domain, and connection type.
 pub const Enterprise = struct {
-    city: Self.City,
-    continent: Self.Continent,
-    country: Self.Country,
-    location: Self.Location,
-    postal: Self.Postal,
-    registered_country: Self.Country,
-    represented_country: Self.RepresentedCountry,
+    city: Self.City = .{},
+    continent: Self.Continent = .{},
+    country: Self.Country = .{},
+    location: Self.Location = .{},
+    postal: Self.Postal = .{},
+    registered_country: Self.Country = .{},
+    represented_country: Self.RepresentedCountry = .{},
     subdivisions: ?std.ArrayList(Self.Subdivision) = null,
-    traits: Self.Traits,
-
-    _arena: std.heap.ArenaAllocator,
+    traits: Self.Traits = .{},
 
     const Self = @This();
     pub const City = struct {
@@ -191,27 +146,6 @@ pub const Enterprise = struct {
         static_ip_score: f64 = 0,
         user_type: []const u8 = "",
     };
-
-    pub fn init(allocator: std.mem.Allocator) Self {
-        const arena = std.heap.ArenaAllocator.init(allocator);
-
-        return .{
-            .city = .{},
-            .continent = .{},
-            .country = .{},
-            .location = .{},
-            .postal = .{},
-            .registered_country = .{},
-            .represented_country = .{},
-            .traits = .{},
-
-            ._arena = arena,
-        };
-    }
-
-    pub fn deinit(self: *const Self) void {
-        self._arena.deinit();
-    }
 };
 
 /// ISP represents a record in the GeoIP2-ISP database, for example,

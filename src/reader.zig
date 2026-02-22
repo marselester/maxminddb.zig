@@ -7,7 +7,6 @@ pub const ReadError = error{
     MetadataStartNotFound,
     InvalidTreeNode,
     CorruptedTree,
-    AddressNotFound,
     UnknownRecordSize,
     InvalidPrefixLen,
 };
@@ -26,20 +25,6 @@ pub const Metadata = struct {
     languages: ?std.ArrayList([]const u8) = null,
     node_count: u32 = 0,
     record_size: u16 = 0,
-
-    _arena: std.heap.ArenaAllocator,
-
-    pub fn init(allocator: std.mem.Allocator) Metadata {
-        const arena = std.heap.ArenaAllocator.init(allocator);
-
-        return .{
-            ._arena = arena,
-        };
-    }
-
-    pub fn deinit(self: *const Metadata) void {
-        self._arena.deinit();
-    }
 };
 
 const data_section_separator_size = 16;
@@ -54,6 +39,7 @@ pub const Reader = struct {
     offset: usize,
     ipv4_start: usize,
     metadata: Metadata,
+    metadata_arena: std.heap.ArenaAllocator,
 
     // Loads a MaxMind DB file into memory.
     pub fn open(allocator: std.mem.Allocator, path: []const u8, max_db_size: usize) !Reader {
@@ -63,15 +49,9 @@ pub const Reader = struct {
         const src = try f.readToEndAlloc(allocator, max_db_size);
         errdefer allocator.free(src);
 
-        // Decode database metadata which is stored as a separate data section,
-        // see https://maxmind.github.io/MaxMind-DB/#database-metadata.
-        const metadata_start = try findMetadataStart(src);
-        var d = decoder.Decoder{
-            .src = src[metadata_start..],
-            .offset = 0,
-        };
-        const metadata = try d.decodeRecord(allocator, Metadata, null);
-        errdefer metadata.deinit();
+        var metadata_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer metadata_arena.deinit();
+        const metadata = try decodeMetadata(metadata_arena.allocator(), src);
 
         const search_tree_size = try std.math.mul(
             usize,
@@ -89,6 +69,7 @@ pub const Reader = struct {
             .offset = data_offset,
             .ipv4_start = 0,
             .metadata = metadata,
+            .metadata_arena = metadata_arena,
         };
 
         r.ipv4_start = try r.findIPv4Start();
@@ -100,7 +81,7 @@ pub const Reader = struct {
     // From this point all the DB records are unusable because their fields were backed by the same memory.
     // Note, the records still have to be deinited since they might contain arrays or maps.
     pub fn close(self: *Reader, allocator: std.mem.Allocator) void {
-        self.metadata.deinit();
+        self.metadata_arena.deinit();
         allocator.free(self.src);
     }
 
@@ -112,15 +93,9 @@ pub const Reader = struct {
         const src = try memorymap.map(f);
         errdefer memorymap.unmap(src);
 
-        // Decode database metadata which is stored as a separate data section,
-        // see https://maxmind.github.io/MaxMind-DB/#database-metadata.
-        const metadata_start = try findMetadataStart(src);
-        var d = decoder.Decoder{
-            .src = src[metadata_start..],
-            .offset = 0,
-        };
-        const metadata = try d.decodeRecord(allocator, Metadata, null);
-        errdefer metadata.deinit();
+        var metadata_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer metadata_arena.deinit();
+        const metadata = try decodeMetadata(metadata_arena.allocator(), src);
 
         const search_tree_size = try std.math.mul(
             usize,
@@ -138,6 +113,7 @@ pub const Reader = struct {
             .offset = data_offset,
             .ipv4_start = 0,
             .metadata = metadata,
+            .metadata_arena = metadata_arena,
         };
 
         r.ipv4_start = try r.findIPv4Start();
@@ -149,27 +125,41 @@ pub const Reader = struct {
     // From this point all the DB records are unusable because their fields were backed by the same memory.
     // Note, the records still have to be deinited since they might contain arrays or maps.
     pub fn unmap(self: *Reader) void {
-        self.metadata.deinit();
+        self.metadata_arena.deinit();
 
         memorymap.unmap(self.src);
         self.mapped_file.?.close();
     }
 
-    // Looks up a record by an IP address.
+    // Looks up a value by an IP address.
+    // The returned Result owns an arena with all decoded allocations.
     pub fn lookup(
         self: *Reader,
         allocator: std.mem.Allocator,
         T: type,
-        address: *const std.net.Address,
+        address: std.net.Address,
         options: Options,
-    ) !T {
-        const ip_bytes = net.ipToBytes(address);
-        const pointer, _ = try self.findAddressInTree(ip_bytes);
+    ) !?Result(T) {
+        const ip = net.IP.init(address);
+        const pointer, const prefix_len = try self.findAddressInTree(ip);
         if (pointer == 0) {
-            return ReadError.AddressNotFound;
+            return null;
         }
 
-        return try self.resolveDataPointerAndDecode(allocator, T, pointer, options.only);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        const value = try self.resolveDataPointerAndDecode(
+            arena.allocator(),
+            T,
+            pointer,
+            options.only,
+        );
+
+        return .{
+            .network = ip.mask(prefix_len).network(prefix_len),
+            .value = value,
+            .arena = arena,
+        };
     }
 
     // Iterates over blocks of IP networks.
@@ -224,8 +214,22 @@ pub const Reader = struct {
             .node_count = node_count,
             .stack = stack,
             .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
             .fields = options.only,
         };
+    }
+
+    // Decodes database metadata which is stored as a separate data section,
+    // see https://maxmind.github.io/MaxMind-DB/#database-metadata.
+    fn decodeMetadata(allocator: std.mem.Allocator, src: []const u8) !Metadata {
+        const metadata_start = try findMetadataStart(src);
+
+        var d = decoder.Decoder{
+            .src = src[metadata_start..],
+            .offset = 0,
+        };
+
+        return try d.decodeRecord(allocator, Metadata, null);
     }
 
     fn resolveDataPointerAndDecode(
@@ -259,8 +263,8 @@ pub const Reader = struct {
         return resolved;
     }
 
-    fn findAddressInTree(self: *Reader, ip_address: []const u8) !struct { usize, usize } {
-        const bit_count: usize = ip_address.len * 8;
+    fn findAddressInTree(self: *Reader, ip: net.IP) !struct { usize, usize } {
+        const bit_count = ip.bitCount();
         var node = self.startNode(bit_count);
 
         const node_count: usize = self.metadata.node_count;
@@ -272,9 +276,7 @@ pub const Reader = struct {
                 break;
             }
 
-            const bit = 1 & std.math.shr(usize, ip_address[i >> 3], 7 - (i % 8));
-
-            node = try self.readNode(node, bit);
+            node = try self.readNode(node, ip.bitAt(i));
         }
 
         if (node == node_count) {
@@ -353,6 +355,20 @@ pub const Reader = struct {
     }
 };
 
+/// Result wraps a decoded value with an arena that owns all its allocations.
+/// Use deinit() to free the result's memory, or skip it when using an outer arena.
+pub fn Result(comptime T: type) type {
+    return struct {
+        network: net.Network,
+        value: T,
+        arena: std.heap.ArenaAllocator,
+
+        pub fn deinit(self: @This()) void {
+            self.arena.deinit();
+        }
+    };
+}
+
 const WithinNode = struct {
     ip_bytes: net.IP,
     prefix_len: usize,
@@ -365,16 +381,19 @@ pub fn Iterator(T: type) type {
         node_count: usize,
         stack: std.ArrayList(WithinNode),
         allocator: std.mem.Allocator,
+        arena: std.heap.ArenaAllocator,
         fields: ?decoder.Fields,
 
         const Self = @This();
 
         pub const Item = struct {
-            net: net.Network,
-            record: T,
+            network: net.Network,
+            value: T,
         };
 
-        pub fn next(self: *Self, allocator: std.mem.Allocator) !?Item {
+        /// Returns the next network and its value.
+        /// The iterator owns the value; each call invalidates the previous Item.
+        pub fn next(self: *Self) !?Item {
             while (self.stack.pop()) |current| {
                 const reader = self.reader;
                 const bit_count = current.ip_bytes.bitCount();
@@ -392,16 +411,18 @@ pub fn Iterator(T: type) type {
                 if (current.node > self.node_count) {
                     const ip_net = current.ip_bytes.network(current.prefix_len);
 
-                    const record = try reader.resolveDataPointerAndDecode(
-                        allocator,
+                    _ = self.arena.reset(.retain_capacity);
+
+                    const value = try reader.resolveDataPointerAndDecode(
+                        self.arena.allocator(),
                         T,
                         current.node,
                         self.fields,
                     );
 
                     return Item{
-                        .net = ip_net,
-                        .record = record,
+                        .network = ip_net,
+                        .value = value,
                     };
                 } else if (current.node < self.node_count) {
                     // In order traversal of the children on the right (1-bit).
@@ -436,6 +457,7 @@ pub fn Iterator(T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            self.arena.deinit();
             self.stack.deinit(self.allocator);
         }
     };

@@ -144,6 +144,34 @@ pub const IP = union(enum) {
         };
     }
 
+    /// Zeros out bits after prefix_len.
+    pub fn mask(self: IP, prefix_len: usize) IP {
+        return switch (self) {
+            .v4 => |b| {
+                // Combines IP bytes into a big-endian u32, e.g.,
+                // 89.160.20.128 = 89 << 24 | 160 << 16 | 20 << 8 | 128
+                const ipAsNumber = std.mem.readInt(u32, &b, .big);
+                const ones: u32 = std.math.maxInt(u32);
+                const bitmask = if (prefix_len == 0) 0 else ones << @intCast(32 - prefix_len);
+
+                var out: [4]u8 = undefined;
+                std.mem.writeInt(u32, &out, ipAsNumber & bitmask, .big);
+
+                return .{ .v4 = out };
+            },
+            .v6 => |b| {
+                const ipAsNumber = std.mem.readInt(u128, &b, .big);
+                const ones: u128 = std.math.maxInt(u128);
+                const bitmask = if (prefix_len == 0) 0 else ones << @intCast(128 - prefix_len);
+
+                var out: [16]u8 = undefined;
+                std.mem.writeInt(u128, &out, ipAsNumber & bitmask, .big);
+
+                return .{ .v6 = out };
+            },
+        };
+    }
+
     pub fn network(self: IP, prefix_len: usize) Network {
         return switch (self) {
             .v4 => |b| .{
@@ -168,33 +196,73 @@ pub const IP = union(enum) {
     }
 };
 
-// Converts an IP address into bytes slice, e.g., IPv6 address 1000:0ac3:22a2:0000:0000:4b3c:0504:1234
-// is converted into [16 0 10 195 34 162 0 0 0 0 75 60 5 4 18 52].
-pub fn ipToBytes(address: *const std.net.Address) []const u8 {
-    return switch (address.any.family) {
-        std.posix.AF.INET => std.mem.asBytes(&address.in.sa.addr),
-        std.posix.AF.INET6 => &address.in6.sa.addr,
-        else => unreachable,
-    };
-}
-
-test "ipToBytes" {
+test "IP.mask" {
     const tests = [_]struct {
         addr: []const u8,
+        prefix_len: usize,
         want: []const u8,
     }{
+        // IPv4 partial byte boundary.
         .{
             .addr = "89.160.20.128",
-            .want = &.{ 89, 160, 20, 128 },
+            .prefix_len = 17,
+            .want = "89.160.0.0/17",
+        },
+        // IPv4 byte boundaries.
+        .{
+            .addr = "89.160.20.128",
+            .prefix_len = 8,
+            .want = "89.0.0.0/8",
         },
         .{
-            .addr = "1000:0ac3:22a2:0000:0000:4b3c:0504:1234",
-            .want = &.{ 16, 0, 10, 195, 34, 162, 0, 0, 0, 0, 75, 60, 5, 4, 18, 52 },
+            .addr = "89.160.20.128",
+            .prefix_len = 24,
+            .want = "89.160.20.0/24",
+        },
+        // IPv4 zero prefix (all bits masked).
+        .{
+            .addr = "89.160.20.128",
+            .prefix_len = 0,
+            .want = "0.0.0.0/0",
+        },
+        // IPv4 full prefix (no bits masked).
+        .{
+            .addr = "89.160.20.128",
+            .prefix_len = 32,
+            .want = "89.160.20.128/32",
+        },
+        // IPv6 byte boundary.
+        .{
+            .addr = "2001:218:ffff:ffff:ffff:ffff:ffff:ffff",
+            .prefix_len = 32,
+            .want = "2001:0218:0000:0000:0000:0000:0000:0000/32",
+        },
+        // IPv6 partial byte boundary: /28 keeps top 4 bits of byte 3.
+        .{
+            .addr = "2a02:ffff::",
+            .prefix_len = 28,
+            .want = "2a02:fff0:0000:0000:0000:0000:0000:0000/28",
+        },
+        // IPv6 zero prefix.
+        .{
+            .addr = "2001:218:ffff:ffff:ffff:ffff:ffff:ffff",
+            .prefix_len = 0,
+            .want = "0000:0000:0000:0000:0000:0000:0000:0000/0",
+        },
+        // IPv6 full prefix (no bits masked).
+        .{
+            .addr = "2001:218:ffff:ffff:ffff:ffff:ffff:ffff",
+            .prefix_len = 128,
+            .want = "2001:0218:ffff:ffff:ffff:ffff:ffff:ffff/128",
         },
     };
 
+    var buf: [64]u8 = undefined;
     for (tests) |tc| {
-        const addr = try std.net.Address.parseIp(tc.addr, 0);
-        try std.testing.expectEqualStrings(tc.want, ipToBytes(&addr));
+        const ip = IP.init(try std.net.Address.parseIp(tc.addr, 0));
+        const masked = ip.mask(tc.prefix_len).network(tc.prefix_len);
+        const got = try std.fmt.bufPrint(&buf, "{f}", .{masked});
+
+        try std.testing.expectEqualStrings(tc.want, got);
     }
 }

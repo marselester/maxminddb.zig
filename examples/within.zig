@@ -19,35 +19,33 @@ pub fn main() !void {
     var it = try db.within(allocator, maxminddb.geolite2.City, network, .{});
     defer it.deinit();
 
-    // Note, for better performance use arena allocator and reset it after calling it.next().
-    // You won't need to call item.record.deinit() in that case.
+    // The iterator owns the values; each next() call invalidates the previous item.
     var n: usize = 0;
-    while (try it.next(allocator)) |item| {
-        defer item.record.deinit();
+    while (try it.next()) |item| {
 
-        const continent = item.record.continent.code;
-        const country = item.record.country.iso_code;
+        const continent = item.value.continent.code;
+        const country = item.value.country.iso_code;
         var city: []const u8 = "";
-        if (item.record.city.names) |city_names| {
+        if (item.value.city.names) |city_names| {
             city = city_names.get("en") orelse "";
         }
 
         if (city.len != 0) {
             std.debug.print("{f} {s}-{s}-{s}\n", .{
-                item.net,
+                item.network,
                 continent,
                 country,
                 city,
             });
         } else if (country.len != 0) {
             std.debug.print("{f} {s}-{s}\n", .{
-                item.net,
+                item.network,
                 continent,
                 country,
             });
         } else if (continent.len != 0) {
             std.debug.print("{f} {s}\n", .{
-                item.net,
+                item.network,
                 continent,
             });
         }

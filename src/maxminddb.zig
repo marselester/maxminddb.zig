@@ -3,12 +3,12 @@ const std = @import("std");
 const reader = @import("reader.zig");
 const decoder = @import("decoder.zig");
 const net = @import("net.zig");
-
 pub const geolite2 = @import("geolite2.zig");
 pub const geoip2 = @import("geoip2.zig");
 
 pub const Error = reader.ReadError || decoder.DecodeError;
 pub const Reader = reader.Reader;
+pub const Result = reader.Result;
 pub const Metadata = reader.Metadata;
 pub const Iterator = reader.Iterator;
 pub const Network = net.Network;
@@ -139,36 +139,47 @@ test "GeoLite2 Country" {
     try expectEqual(DatabaseType.geolite_country, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(allocator, geolite2.Country, &ip, .{});
+    const got = (try db.lookup(allocator, geolite2.Country, ip, .{})).?;
     defer got.deinit();
 
-    try expectEqualStrings("EU", got.continent.code);
-    try expectEqual(6255148, got.continent.geoname_id);
+    try expectEqualStrings("EU", got.value.continent.code);
+    try expectEqual(6255148, got.value.continent.geoname_id);
     try expectEqualMaps(
-        got.continent.names.?,
+        got.value.continent.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Europa", "Europe", "Europa", "Europe", "ヨーロッパ", "Europa", "Европа", "欧洲" },
     );
 
-    try expectEqual(2661886, got.country.geoname_id);
-    try expectEqual(true, got.country.is_in_european_union);
-    try expectEqualStrings("SE", got.country.iso_code);
+    try expectEqual(2661886, got.value.country.geoname_id);
+    try expectEqual(true, got.value.country.is_in_european_union);
+    try expectEqualStrings("SE", got.value.country.iso_code);
     try expectEqualMaps(
-        got.country.names.?,
+        got.value.country.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Schweden", "Sweden", "Suecia", "Suède", "スウェーデン王国", "Suécia", "Швеция", "瑞典" },
     );
 
-    try expectEqual(2921044, got.registered_country.geoname_id);
-    try expectEqual(true, got.registered_country.is_in_european_union);
-    try expectEqualStrings("DE", got.registered_country.iso_code);
+    try expectEqual(2921044, got.value.registered_country.geoname_id);
+    try expectEqual(true, got.value.registered_country.is_in_european_union);
+    try expectEqualStrings("DE", got.value.registered_country.iso_code);
     try expectEqualMaps(
-        got.registered_country.names.?,
+        got.value.registered_country.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Deutschland", "Germany", "Alemania", "Allemagne", "ドイツ連邦共和国", "Alemanha", "Германия", "德国" },
     );
 
-    try expectEqualDeep(geolite2.Country.RepresentedCountry{}, got.represented_country);
+    try expectEqualDeep(geolite2.Country.RepresentedCountry{}, got.value.represented_country);
+
+    // Verify network masking for an IPv6 lookup.
+    const ipv6 = try std.net.Address.parseIp("2001:218:ffff:ffff:ffff:ffff:ffff:ffff", 0);
+    const got_v6 = (try db.lookup(allocator, geolite2.Country, ipv6, .{})).?;
+    defer got_v6.deinit();
+
+    try expectEqualStrings("JP", got_v6.value.country.iso_code);
+
+    var buf: [64]u8 = undefined;
+    const got_network = try std.fmt.bufPrint(&buf, "{f}", .{got_v6.network});
+    try expectEqualStrings("2001:0218:0000:0000:0000:0000:0000:0000/32", got_network);
 }
 
 test "GeoLite2 City" {
@@ -181,29 +192,29 @@ test "GeoLite2 City" {
     try expectEqual(DatabaseType.geolite_city, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(allocator, geolite2.City, &ip, .{});
+    const got = (try db.lookup(allocator, geolite2.City, ip, .{})).?;
     defer got.deinit();
 
-    try expectEqual(2694762, got.city.geoname_id);
+    try expectEqual(2694762, got.value.city.geoname_id);
     try expectEqualMaps(
-        got.city.names.?,
+        got.value.city.names.?,
         &.{ "de", "en", "fr", "ja", "zh-CN" },
         &.{ "Linköping", "Linköping", "Linköping", "リンシェーピング", "林雪平" },
     );
 
-    try expectEqualStrings("EU", got.continent.code);
-    try expectEqual(6255148, got.continent.geoname_id);
+    try expectEqualStrings("EU", got.value.continent.code);
+    try expectEqual(6255148, got.value.continent.geoname_id);
     try expectEqualMaps(
-        got.continent.names.?,
+        got.value.continent.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Europa", "Europe", "Europa", "Europe", "ヨーロッパ", "Europa", "Европа", "欧洲" },
     );
 
-    try expectEqual(2661886, got.country.geoname_id);
-    try expectEqual(true, got.country.is_in_european_union);
-    try expectEqualStrings("SE", got.country.iso_code);
+    try expectEqual(2661886, got.value.country.geoname_id);
+    try expectEqual(true, got.value.country.is_in_european_union);
+    try expectEqualStrings("SE", got.value.country.iso_code);
     try expectEqualMaps(
-        got.country.names.?,
+        got.value.country.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Schweden", "Sweden", "Suecia", "Suède", "スウェーデン王国", "Suécia", "Швеция", "瑞典" },
     );
@@ -215,24 +226,24 @@ test "GeoLite2 City" {
             .longitude = 15.6167,
             .time_zone = "Europe/Stockholm",
         },
-        got.location,
+        got.value.location,
     );
 
-    try expectEqualDeep(geolite2.City.Postal{}, got.postal);
+    try expectEqualDeep(geolite2.City.Postal{}, got.value.postal);
 
-    try expectEqual(2921044, got.registered_country.geoname_id);
-    try expectEqual(true, got.registered_country.is_in_european_union);
-    try expectEqualStrings("DE", got.registered_country.iso_code);
+    try expectEqual(2921044, got.value.registered_country.geoname_id);
+    try expectEqual(true, got.value.registered_country.is_in_european_union);
+    try expectEqualStrings("DE", got.value.registered_country.iso_code);
     try expectEqualMaps(
-        got.registered_country.names.?,
+        got.value.registered_country.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Deutschland", "Germany", "Alemania", "Allemagne", "ドイツ連邦共和国", "Alemanha", "Германия", "德国" },
     );
 
-    try expectEqualDeep(geolite2.Country.RepresentedCountry{}, got.represented_country);
+    try expectEqualDeep(geolite2.Country.RepresentedCountry{}, got.value.represented_country);
 
-    try expectEqual(1, got.subdivisions.?.items.len);
-    const sub = got.subdivisions.?.getLast();
+    try expectEqual(1, got.value.subdivisions.?.items.len);
+    const sub = got.value.subdivisions.?.getLast();
     try expectEqual(2685867, sub.geoname_id);
     try expectEqualStrings("E", sub.iso_code);
     try expectEqualMaps(
@@ -252,13 +263,18 @@ test "GeoLite2 ASN" {
     try expectEqual(DatabaseType.geolite_asn, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(allocator, geolite2.ASN, &ip, .{});
+    const got = (try db.lookup(allocator, geolite2.ASN, ip, .{})).?;
+    defer got.deinit();
 
     const want = geolite2.ASN{
         .autonomous_system_number = 29518,
         .autonomous_system_organization = "Bredband2 AB",
     };
-    try expectEqualDeep(want, got);
+    try expectEqualDeep(want, got.value);
+
+    var buf: [64]u8 = undefined;
+    const got_network = try std.fmt.bufPrint(&buf, "{f}", .{got.network});
+    try expectEqualStrings("89.160.0.0/17", got_network);
 }
 
 test "GeoIP2 Country" {
@@ -271,49 +287,49 @@ test "GeoIP2 Country" {
     try expectEqual(DatabaseType.geoip_country, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(allocator, geoip2.Country, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.Country, ip, .{})).?;
     defer got.deinit();
 
-    try expectEqualStrings("EU", got.continent.code);
-    try expectEqual(6255148, got.continent.geoname_id);
+    try expectEqualStrings("EU", got.value.continent.code);
+    try expectEqual(6255148, got.value.continent.geoname_id);
     try expectEqualMaps(
-        got.continent.names.?,
+        got.value.continent.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Europa", "Europe", "Europa", "Europe", "ヨーロッパ", "Europa", "Европа", "欧洲" },
     );
 
-    try expectEqual(2661886, got.country.geoname_id);
-    try expectEqual(true, got.country.is_in_european_union);
-    try expectEqualStrings("SE", got.country.iso_code);
+    try expectEqual(2661886, got.value.country.geoname_id);
+    try expectEqual(true, got.value.country.is_in_european_union);
+    try expectEqualStrings("SE", got.value.country.iso_code);
     try expectEqualMaps(
-        got.country.names.?,
+        got.value.country.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Schweden", "Sweden", "Suecia", "Suède", "スウェーデン王国", "Suécia", "Швеция", "瑞典" },
     );
 
-    try expectEqual(2921044, got.registered_country.geoname_id);
-    try expectEqual(true, got.registered_country.is_in_european_union);
-    try expectEqualStrings("DE", got.registered_country.iso_code);
+    try expectEqual(2921044, got.value.registered_country.geoname_id);
+    try expectEqual(true, got.value.registered_country.is_in_european_union);
+    try expectEqualStrings("DE", got.value.registered_country.iso_code);
     try expectEqualMaps(
-        got.registered_country.names.?,
+        got.value.registered_country.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Deutschland", "Germany", "Alemania", "Allemagne", "ドイツ連邦共和国", "Alemanha", "Германия", "德国" },
     );
 
-    try expectEqualDeep(geoip2.Country.RepresentedCountry{}, got.represented_country);
+    try expectEqualDeep(geoip2.Country.RepresentedCountry{}, got.value.represented_country);
 
     try expectEqualDeep(
         geoip2.Country.Traits{
             .is_anycast = false,
         },
-        got.traits,
+        got.value.traits,
     );
 
     const ip2 = try std.net.Address.parseIp("214.1.1.0", 0);
-    const got2 = try db.lookup(allocator, geoip2.Country, &ip2, .{});
+    const got2 = (try db.lookup(allocator, geoip2.Country, ip2, .{})).?;
     defer got2.deinit();
 
-    try expectEqual(true, got2.traits.is_anycast);
+    try expectEqual(true, got2.value.traits.is_anycast);
 }
 
 test "GeoIP2 Country RepresentedCountry" {
@@ -324,21 +340,21 @@ test "GeoIP2 Country RepresentedCountry" {
     defer db.unmap();
 
     const ip = try std.net.Address.parseIp("202.196.224.0", 0);
-    const got = try db.lookup(allocator, geoip2.Country, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.Country, ip, .{})).?;
     defer got.deinit();
 
-    try expectEqualStrings("AS", got.continent.code);
-    try expectEqual(6255147, got.continent.geoname_id);
+    try expectEqualStrings("AS", got.value.continent.code);
+    try expectEqual(6255147, got.value.continent.geoname_id);
 
-    try expectEqual(1694008, got.country.geoname_id);
-    try expectEqualStrings("PH", got.country.iso_code);
+    try expectEqual(1694008, got.value.country.geoname_id);
+    try expectEqualStrings("PH", got.value.country.iso_code);
 
-    try expectEqual(1694008, got.registered_country.geoname_id);
-    try expectEqualStrings("PH", got.registered_country.iso_code);
+    try expectEqual(1694008, got.value.registered_country.geoname_id);
+    try expectEqualStrings("PH", got.value.registered_country.iso_code);
 
-    try expectEqual(6252001, got.represented_country.geoname_id);
-    try expectEqualStrings("US", got.represented_country.iso_code);
-    try expectEqualStrings("military", got.represented_country.type);
+    try expectEqual(6252001, got.value.represented_country.geoname_id);
+    try expectEqualStrings("US", got.value.represented_country.iso_code);
+    try expectEqualStrings("military", got.value.represented_country.type);
 }
 
 test "GeoIP2 City" {
@@ -351,29 +367,29 @@ test "GeoIP2 City" {
     try expectEqual(DatabaseType.geoip_city, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(allocator, geoip2.City, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.City, ip, .{})).?;
     defer got.deinit();
 
-    try expectEqual(2694762, got.city.geoname_id);
+    try expectEqual(2694762, got.value.city.geoname_id);
     try expectEqualMaps(
-        got.city.names.?,
+        got.value.city.names.?,
         &.{ "de", "en", "fr", "ja", "zh-CN" },
         &.{ "Linköping", "Linköping", "Linköping", "リンシェーピング", "林雪平" },
     );
 
-    try expectEqualStrings("EU", got.continent.code);
-    try expectEqual(6255148, got.continent.geoname_id);
+    try expectEqualStrings("EU", got.value.continent.code);
+    try expectEqual(6255148, got.value.continent.geoname_id);
     try expectEqualMaps(
-        got.continent.names.?,
+        got.value.continent.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Europa", "Europe", "Europa", "Europe", "ヨーロッパ", "Europa", "Европа", "欧洲" },
     );
 
-    try expectEqual(2661886, got.country.geoname_id);
-    try expectEqual(true, got.country.is_in_european_union);
-    try expectEqualStrings("SE", got.country.iso_code);
+    try expectEqual(2661886, got.value.country.geoname_id);
+    try expectEqual(true, got.value.country.is_in_european_union);
+    try expectEqualStrings("SE", got.value.country.iso_code);
     try expectEqualMaps(
-        got.country.names.?,
+        got.value.country.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Schweden", "Sweden", "Suecia", "Suède", "スウェーデン王国", "Suécia", "Швеция", "瑞典" },
     );
@@ -385,24 +401,24 @@ test "GeoIP2 City" {
             .longitude = 15.6167,
             .time_zone = "Europe/Stockholm",
         },
-        got.location,
+        got.value.location,
     );
 
-    try expectEqualDeep(geoip2.City.Postal{}, got.postal);
+    try expectEqualDeep(geoip2.City.Postal{}, got.value.postal);
 
-    try expectEqual(2921044, got.registered_country.geoname_id);
-    try expectEqual(true, got.registered_country.is_in_european_union);
-    try expectEqualStrings("DE", got.registered_country.iso_code);
+    try expectEqual(2921044, got.value.registered_country.geoname_id);
+    try expectEqual(true, got.value.registered_country.is_in_european_union);
+    try expectEqualStrings("DE", got.value.registered_country.iso_code);
     try expectEqualMaps(
-        got.registered_country.names.?,
+        got.value.registered_country.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Deutschland", "Germany", "Alemania", "Allemagne", "ドイツ連邦共和国", "Alemanha", "Германия", "德国" },
     );
 
-    try expectEqualDeep(geoip2.Country.RepresentedCountry{}, got.represented_country);
+    try expectEqualDeep(geoip2.Country.RepresentedCountry{}, got.value.represented_country);
 
-    try expectEqual(1, got.subdivisions.?.items.len);
-    const sub = got.subdivisions.?.getLast();
+    try expectEqual(1, got.value.subdivisions.?.items.len);
+    const sub = got.value.subdivisions.?.getLast();
     try expectEqual(2685867, sub.geoname_id);
     try expectEqualStrings("E", sub.iso_code);
     try expectEqualMaps(
@@ -415,14 +431,14 @@ test "GeoIP2 City" {
         geoip2.Country.Traits{
             .is_anycast = false,
         },
-        got.traits,
+        got.value.traits,
     );
 
     const ip2 = try std.net.Address.parseIp("214.1.1.0", 0);
-    const got2 = try db.lookup(allocator, geoip2.City, &ip2, .{});
+    const got2 = (try db.lookup(allocator, geoip2.City, ip2, .{})).?;
     defer got2.deinit();
 
-    try expectEqual(true, got2.traits.is_anycast);
+    try expectEqual(true, got2.value.traits.is_anycast);
 }
 
 test "GeoIP2 Enterprise" {
@@ -435,31 +451,31 @@ test "GeoIP2 Enterprise" {
     try expectEqual(DatabaseType.geoip_enterprise, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("74.209.24.0", 0);
-    const got = try db.lookup(allocator, geoip2.Enterprise, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.Enterprise, ip, .{})).?;
     defer got.deinit();
 
-    try expectEqual(11, got.city.confidence);
-    try expectEqual(5112335, got.city.geoname_id);
+    try expectEqual(11, got.value.city.confidence);
+    try expectEqual(5112335, got.value.city.geoname_id);
     try expectEqualMaps(
-        got.city.names.?,
+        got.value.city.names.?,
         &.{"en"},
         &.{"Chatham"},
     );
 
-    try expectEqualStrings("NA", got.continent.code);
-    try expectEqual(6255149, got.continent.geoname_id);
+    try expectEqualStrings("NA", got.value.continent.code);
+    try expectEqual(6255149, got.value.continent.geoname_id);
     try expectEqualMaps(
-        got.continent.names.?,
+        got.value.continent.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "Nordamerika", "North America", "Norteamérica", "Amérique du Nord", "北アメリカ", "América do Norte", "Северная Америка", "北美洲" },
     );
 
-    try expectEqual(99, got.country.confidence);
-    try expectEqual(6252001, got.country.geoname_id);
-    try expectEqual(false, got.country.is_in_european_union);
-    try expectEqualStrings("US", got.country.iso_code);
+    try expectEqual(99, got.value.country.confidence);
+    try expectEqual(6252001, got.value.country.geoname_id);
+    try expectEqual(false, got.value.country.is_in_european_union);
+    try expectEqualStrings("US", got.value.country.iso_code);
     try expectEqualMaps(
-        got.country.names.?,
+        got.value.country.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "USA", "United States", "Estados Unidos", "États-Unis", "アメリカ合衆国", "Estados Unidos", "США", "美国" },
     );
@@ -472,7 +488,7 @@ test "GeoIP2 Enterprise" {
             .metro_code = 532,
             .time_zone = "America/New_York",
         },
-        got.location,
+        got.value.location,
     );
 
     try expectEqualDeep(
@@ -480,22 +496,22 @@ test "GeoIP2 Enterprise" {
             .code = "12037",
             .confidence = 11,
         },
-        got.postal,
+        got.value.postal,
     );
 
-    try expectEqual(6252001, got.registered_country.geoname_id);
-    try expectEqual(false, got.registered_country.is_in_european_union);
-    try expectEqualStrings("US", got.registered_country.iso_code);
+    try expectEqual(6252001, got.value.registered_country.geoname_id);
+    try expectEqual(false, got.value.registered_country.is_in_european_union);
+    try expectEqualStrings("US", got.value.registered_country.iso_code);
     try expectEqualMaps(
-        got.registered_country.names.?,
+        got.value.registered_country.names.?,
         &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
         &.{ "USA", "United States", "Estados Unidos", "États-Unis", "アメリカ合衆国", "Estados Unidos", "США", "美国" },
     );
 
-    try expectEqualDeep(geoip2.Enterprise.RepresentedCountry{}, got.represented_country);
+    try expectEqualDeep(geoip2.Enterprise.RepresentedCountry{}, got.value.represented_country);
 
-    try expectEqual(1, got.subdivisions.?.items.len);
-    const sub = got.subdivisions.?.getLast();
+    try expectEqual(1, got.value.subdivisions.?.items.len);
+    const sub = got.value.subdivisions.?.getLast();
     try expectEqual(93, sub.confidence);
     try expectEqual(5128638, sub.geoname_id);
     try expectEqualStrings("NY", sub.iso_code);
@@ -517,14 +533,14 @@ test "GeoIP2 Enterprise" {
             .static_ip_score = 0.34,
             .user_type = "residential",
         },
-        got.traits,
+        got.value.traits,
     );
 
     const ip2 = try std.net.Address.parseIp("214.1.1.0", 0);
-    const got2 = try db.lookup(allocator, geoip2.Enterprise, &ip2, .{});
+    const got2 = (try db.lookup(allocator, geoip2.Enterprise, ip2, .{})).?;
     defer got2.deinit();
 
-    try expectEqual(true, got2.traits.is_anycast);
+    try expectEqual(true, got2.value.traits.is_anycast);
 }
 
 test "GeoIP2 ISP" {
@@ -537,7 +553,8 @@ test "GeoIP2 ISP" {
     try expectEqual(DatabaseType.geoip_isp, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("149.101.100.0", 0);
-    const got = try db.lookup(allocator, geoip2.ISP, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.ISP, ip, .{})).?;
+    defer got.deinit();
 
     const want = geoip2.ISP{
         .autonomous_system_number = 6167,
@@ -547,7 +564,7 @@ test "GeoIP2 ISP" {
         .mobile_network_code = "004",
         .organization = "Verizon Wireless",
     };
-    try expectEqualDeep(want, got);
+    try expectEqualDeep(want, got.value);
 }
 
 test "GeoIP2 Connection-Type" {
@@ -560,12 +577,13 @@ test "GeoIP2 Connection-Type" {
     try expectEqual(DatabaseType.geoip_connection_type, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("96.1.20.112", 0);
-    const got = try db.lookup(allocator, geoip2.ConnectionType, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.ConnectionType, ip, .{})).?;
+    defer got.deinit();
 
     const want = geoip2.ConnectionType{
         .connection_type = "Cable/DSL",
     };
-    try expectEqualDeep(want, got);
+    try expectEqualDeep(want, got.value);
 }
 
 test "GeoIP2 Anonymous-IP" {
@@ -578,7 +596,8 @@ test "GeoIP2 Anonymous-IP" {
     try expectEqual(DatabaseType.geoip_anonymous_ip, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("81.2.69.0", 0);
-    const got = try db.lookup(allocator, geoip2.AnonymousIP, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.AnonymousIP, ip, .{})).?;
+    defer got.deinit();
 
     const want = geoip2.AnonymousIP{
         .is_anonymous = true,
@@ -588,7 +607,7 @@ test "GeoIP2 Anonymous-IP" {
         .is_residential_proxy = true,
         .is_tor_exit_node = true,
     };
-    try expectEqualDeep(want, got);
+    try expectEqualDeep(want, got.value);
 }
 
 test "GeoIP Anonymous-Plus" {
@@ -601,7 +620,8 @@ test "GeoIP Anonymous-Plus" {
     try expectEqual(DatabaseType.geoip_anonymous_plus, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("1.2.0.1", 0);
-    const got = try db.lookup(allocator, geoip2.AnonymousPlus, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.AnonymousPlus, ip, .{})).?;
+    defer got.deinit();
 
     const want = geoip2.AnonymousPlus{
         .anonymizer_confidence = 30,
@@ -610,7 +630,7 @@ test "GeoIP Anonymous-Plus" {
         .network_last_seen = "2025-04-14",
         .provider_name = "foo",
     };
-    try expectEqualDeep(want, got);
+    try expectEqualDeep(want, got.value);
 }
 
 test "GeoIP2 DensityIncome" {
@@ -623,13 +643,14 @@ test "GeoIP2 DensityIncome" {
     try expectEqual(DatabaseType.geoip_densityincome, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("5.83.124.123", 0);
-    const got = try db.lookup(allocator, geoip2.DensityIncome, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.DensityIncome, ip, .{})).?;
+    defer got.deinit();
 
     const want = geoip2.DensityIncome{
         .average_income = 32323,
         .population_density = 1232,
     };
-    try expectEqualDeep(want, got);
+    try expectEqualDeep(want, got.value);
 }
 
 test "GeoIP2 Domain" {
@@ -642,12 +663,13 @@ test "GeoIP2 Domain" {
     try expectEqual(DatabaseType.geoip_domain, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("66.92.80.123", 0);
-    const got = try db.lookup(allocator, geoip2.Domain, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.Domain, ip, .{})).?;
+    defer got.deinit();
 
     const want = geoip2.Domain{
         .domain = "speakeasy.net",
     };
-    try expectEqualDeep(want, got);
+    try expectEqualDeep(want, got.value);
 }
 
 test "GeoIP2 IP-Risk" {
@@ -660,7 +682,8 @@ test "GeoIP2 IP-Risk" {
     try expectEqual(DatabaseType.geoip_ip_risk, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("6.1.2.1", 0);
-    const got = try db.lookup(allocator, geoip2.IPRisk, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.IPRisk, ip, .{})).?;
+    defer got.deinit();
 
     const want = geoip2.IPRisk{
         .anonymizer_confidence = 95,
@@ -670,10 +693,11 @@ test "GeoIP2 IP-Risk" {
         .network_last_seen = "2025-01-15",
         .provider_name = "Test VPN Service",
     };
-    try expectEqualDeep(want, got);
+    try expectEqualDeep(want, got.value);
 
     const ip2 = try std.net.Address.parseIp("214.2.3.5", 0);
-    const got2 = try db.lookup(allocator, geoip2.IPRisk, &ip2, .{});
+    const got2 = (try db.lookup(allocator, geoip2.IPRisk, ip2, .{})).?;
+    defer got2.deinit();
 
     const want2 = geoip2.IPRisk{
         .ip_risk = 90,
@@ -682,7 +706,7 @@ test "GeoIP2 IP-Risk" {
         .is_residential_proxy = true,
         .is_tor_exit_node = true,
     };
-    try expectEqualDeep(want2, got2);
+    try expectEqualDeep(want2, got2.value);
 }
 
 test "GeoIP2 Static-IP-Score" {
@@ -695,12 +719,13 @@ test "GeoIP2 Static-IP-Score" {
     try expectEqual(DatabaseType.geoip_static_ip_score, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("1.2.3.4", 0);
-    const got = try db.lookup(allocator, geoip2.StaticIPScore, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.StaticIPScore, ip, .{})).?;
+    defer got.deinit();
 
     const want = geoip2.StaticIPScore{
         .score = 0.05,
     };
-    try expectEqualDeep(want, got);
+    try expectEqualDeep(want, got.value);
 }
 
 test "GeoIP2 User-Count" {
@@ -713,13 +738,14 @@ test "GeoIP2 User-Count" {
     try expectEqual(DatabaseType.geoip_user_count, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.net.Address.parseIp("1.2.3.4", 0);
-    const got = try db.lookup(allocator, geoip2.UserCount, &ip, .{});
+    const got = (try db.lookup(allocator, geoip2.UserCount, ip, .{})).?;
+    defer got.deinit();
 
     const want = geoip2.UserCount{
         .ipv4_24 = 4,
         .ipv4_32 = 3,
     };
-    try expectEqualDeep(want, got);
+    try expectEqualDeep(want, got.value);
 }
 
 test "lookup with Fields filtering" {
@@ -732,19 +758,19 @@ test "lookup with Fields filtering" {
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
 
     const fields = Fields.from(geolite2.City, &.{ "city", "country" });
-    const got = try db.lookup(allocator, geolite2.City, &ip, .{ .only = fields });
+    const got = (try db.lookup(allocator, geolite2.City, ip, .{ .only = fields })).?;
     defer got.deinit();
 
     // Filtered fields are decoded.
-    try expectEqual(2694762, got.city.geoname_id);
-    try expectEqual(2661886, got.country.geoname_id);
-    try expectEqualStrings("SE", got.country.iso_code);
+    try expectEqual(2694762, got.value.city.geoname_id);
+    try expectEqual(2661886, got.value.country.geoname_id);
+    try expectEqualStrings("SE", got.value.country.iso_code);
 
     // Non-filtered fields remain at defaults.
-    try expectEqualStrings("", got.continent.code);
-    try expectEqual(0, got.continent.geoname_id);
-    try expectEqualDeep(geolite2.City.Location{}, got.location);
-    try expectEqualDeep(geolite2.City.Postal{}, got.postal);
+    try expectEqualStrings("", got.value.continent.code);
+    try expectEqual(0, got.value.continent.geoname_id);
+    try expectEqualDeep(geolite2.City.Location{}, got.value.location);
+    try expectEqualDeep(geolite2.City.Postal{}, got.value.postal);
 }
 
 test "lookup with custom record" {
@@ -764,8 +790,9 @@ test "lookup with custom record" {
     };
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
-    const got = try db.lookup(allocator, MyCity, &ip, .{});
+    const got = (try db.lookup(allocator, MyCity, ip, .{})).?;
+    defer got.deinit();
 
-    try expectEqual(2694762, got.city.geoname_id);
-    try expectEqualStrings("Linköping", got.city.names.en);
+    try expectEqual(2694762, got.value.city.geoname_id);
+    try expectEqualStrings("Linköping", got.value.city.names.en);
 }
