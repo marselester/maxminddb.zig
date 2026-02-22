@@ -48,8 +48,7 @@ const DataField = struct {
 };
 
 /// Fields is a bitmask for selecting which top-level struct fields to decode.
-/// It also provides struct introspection helpers that skip underscore-prefixed
-/// internal fields: count, index, and entries.
+/// It also provides struct introspection methods that skip underscore-prefixed fields.
 pub const Fields = struct {
     mask: u64 = 0,
 
@@ -61,6 +60,36 @@ pub const Fields = struct {
         }
 
         return f;
+    }
+
+    /// Parses a separated string of field names into Fields bitmask.
+    /// Returns .unknown_field if a name is unknown.
+    pub fn parse(comptime T: type, field_names: []const u8, delimiter: u8) union(enum) {
+        fields: Fields,
+        unknown_field: []const u8,
+    } {
+        var fields: Fields = .{};
+        var it = std.mem.splitScalar(u8, field_names, delimiter);
+        while (it.next()) |f| {
+            const name = std.mem.trim(u8, f, " ");
+            if (name.len == 0) {
+                continue;
+            }
+
+            var found = false;
+            inline for (entries(T), 0..) |entry, idx| {
+                if (std.mem.eql(u8, name, entry.name)) {
+                    fields = fields.set(idx);
+                    found = true;
+                }
+            }
+
+            if (!found) {
+                return .{ .unknown_field = name };
+            }
+        }
+
+        return .{ .fields = fields };
     }
 
     /// Returns Fields with all bits set for the given struct type (all fields included).
@@ -82,11 +111,6 @@ pub const Fields = struct {
         return self.mask & (@as(u64, 1) << index(T, name)) != 0;
     }
 
-    /// Returns true if the two Fields have the same bits set.
-    pub fn equal(self: Fields, other: Fields) bool {
-        return self.mask == other.mask;
-    }
-
     /// Returns the number of non-underscore fields in the struct type.
     pub fn count(T: type) comptime_int {
         var n = 0;
@@ -100,7 +124,7 @@ pub const Fields = struct {
     }
 
     /// Returns the index of a named field among non-underscore fields.
-    pub fn index(T: type, comptime name: []const u8) comptime_int {
+    fn index(T: type, comptime name: []const u8) comptime_int {
         var idx = 0;
         for (std.meta.fields(T)) |f| {
             if (f.name[0] == '_') {
@@ -119,18 +143,18 @@ pub const Fields = struct {
 
     /// Returns the non-underscore struct fields of T.
     pub fn entries(T: type) []const std.builtin.Type.StructField {
-        var field_names: [count(T)]std.builtin.Type.StructField = undefined;
+        var fields: [count(T)]std.builtin.Type.StructField = undefined;
         var i = 0;
         for (std.meta.fields(T)) |f| {
             if (f.name[0] == '_') {
                 continue;
             }
 
-            field_names[i] = f;
+            fields[i] = f;
             i += 1;
         }
 
-        return &field_names;
+        return &fields;
     }
 };
 
@@ -562,21 +586,59 @@ const TestRecord = struct {
     _arena: u32 = 0,
 };
 
-test "Fields.count excludes underscore fields" {
-    try std.testing.expectEqual(3, Fields.count(TestRecord));
-}
-
-test "Fields.index returns position among non-underscore fields" {
-    try std.testing.expectEqual(0, Fields.index(TestRecord, "city"));
-    try std.testing.expectEqual(1, Fields.index(TestRecord, "country"));
-    try std.testing.expectEqual(2, Fields.index(TestRecord, "location"));
-}
-
 test "Fields.from sets bits for named fields" {
     const f = Fields.from(TestRecord, &.{ "city", "location" });
     try std.testing.expectEqual(true, f.has(TestRecord, "city"));
     try std.testing.expectEqual(false, f.has(TestRecord, "country"));
     try std.testing.expectEqual(true, f.has(TestRecord, "location"));
+}
+
+test "Fields.parse" {
+    const tests = [_]struct {
+        input: []const u8,
+        want_fields: ?Fields = null,
+        want_err: ?[]const u8 = null,
+    }{
+        .{
+            .input = "city,location",
+            .want_fields = Fields.from(TestRecord, &.{ "city", "location" }),
+        },
+        .{
+            .input = " city , location ",
+            .want_fields = Fields.from(TestRecord, &.{ "city", "location" }),
+        },
+        .{
+            .input = "",
+            .want_fields = Fields{},
+        },
+        .{
+            .input = " ,, , ",
+            .want_fields = Fields{},
+        },
+        .{
+            .input = "city",
+            .want_fields = Fields.from(TestRecord, &.{"city"}),
+        },
+        .{
+            .input = "city,country,location",
+            .want_fields = Fields.all(TestRecord),
+        },
+        .{
+            .input = "city,city",
+            .want_fields = Fields.from(TestRecord, &.{"city"}),
+        },
+        .{
+            .input = "city,bogus",
+            .want_err = "bogus",
+        },
+    };
+
+    for (tests) |tc| {
+        switch (Fields.parse(TestRecord, tc.input, ',')) {
+            .fields => |f| try std.testing.expectEqual(tc.want_fields.?, f),
+            .unknown_field => |name| try std.testing.expectEqualStrings(tc.want_err.?, name),
+        }
+    }
 }
 
 test "Fields.all sets all bits" {
@@ -594,12 +656,14 @@ test "Fields.set sets bit at index" {
     try std.testing.expectEqual(false, f.has(TestRecord, "location"));
 }
 
-test "Fields.equal compares masks" {
-    const a = Fields.from(TestRecord, &.{ "city", "country" });
-    const b = Fields.from(TestRecord, &.{ "city", "country" });
-    const c = Fields.from(TestRecord, &.{"city"});
-    try std.testing.expectEqual(true, a.equal(b));
-    try std.testing.expectEqual(false, a.equal(c));
+test "Fields.count excludes underscore fields" {
+    try std.testing.expectEqual(3, Fields.count(TestRecord));
+}
+
+test "Fields.index returns position among non-underscore fields" {
+    try std.testing.expectEqual(0, Fields.index(TestRecord, "city"));
+    try std.testing.expectEqual(1, Fields.index(TestRecord, "country"));
+    try std.testing.expectEqual(2, Fields.index(TestRecord, "location"));
 }
 
 test "Fields.entries returns non-underscore fields" {
