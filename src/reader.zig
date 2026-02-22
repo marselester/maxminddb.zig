@@ -214,7 +214,7 @@ pub const Reader = struct {
             .node_count = node_count,
             .stack = stack,
             .allocator = allocator,
-            .arena = std.heap.ArenaAllocator.init(allocator),
+            .cache = .{},
             .fields = options.only,
         };
     }
@@ -381,8 +381,74 @@ pub fn Iterator(T: type) type {
         node_count: usize,
         stack: std.ArrayList(WithinNode),
         allocator: std.mem.Allocator,
-        arena: std.heap.ArenaAllocator,
         fields: ?decoder.Fields,
+        cache: Cache,
+
+        // Ring buffer cache of recently decoded records.
+        // Many adjacent networks in the tree share the same data pointer,
+        // so caching avoids re-decoding the same record repeatedly.
+        // Once full, new entries overwrite the oldest slot in a circular fashion.
+        // Each entry owns an arena that backs the decoded value's allocations;
+        // the arena is freed on eviction.
+        const Cache = struct {
+            const Entry = struct {
+                pointer: usize,
+                value: T,
+                arena: std.heap.ArenaAllocator,
+            };
+
+            // 16 showed a good tradeoff in DuckDB table scan,
+            // see https://github.com/marselester/duckdb-maxmind.
+            const cache_size = 16;
+            entries: [cache_size]Entry = undefined,
+            // Indicates number of entries in the cache.
+            len: usize = 0,
+            // It's an index in the entries array where a new item will be written at.
+            write_pos: usize = 0,
+
+            fn lookup(self: *Cache, pointer: usize) ?T {
+                for (self.entries[0..self.len]) |e| {
+                    if (e.pointer == pointer) {
+                        return e.value;
+                    }
+                }
+
+                return null;
+            }
+
+            fn insert(
+                self: *Cache,
+                pointer: usize,
+                value: T,
+                arena: std.heap.ArenaAllocator,
+            ) void {
+                if (self.len < cache_size) {
+                    self.entries[self.len] = .{
+                        .pointer = pointer,
+                        .value = value,
+                        .arena = arena,
+                    };
+                    self.len += 1;
+
+                    return;
+                }
+
+                // Evict oldest entry.
+                self.entries[self.write_pos].arena.deinit();
+                self.entries[self.write_pos] = .{
+                    .pointer = pointer,
+                    .value = value,
+                    .arena = arena,
+                };
+                self.write_pos = (self.write_pos + 1) % cache_size;
+            }
+
+            fn deinit(self: *Cache) void {
+                for (self.entries[0..self.len]) |*e| {
+                    e.arena.deinit();
+                }
+            }
+        };
 
         const Self = @This();
 
@@ -392,7 +458,7 @@ pub fn Iterator(T: type) type {
         };
 
         /// Returns the next network and its value.
-        /// The iterator owns the value; each call invalidates the previous Item.
+        /// The iterator owns the value; each call eventually invalidates the previous Item.
         pub fn next(self: *Self) !?Item {
             while (self.stack.pop()) |current| {
                 const reader = self.reader;
@@ -411,14 +477,26 @@ pub fn Iterator(T: type) type {
                 if (current.node > self.node_count) {
                     const ip_net = current.ip_bytes.network(current.prefix_len);
 
-                    _ = self.arena.reset(.retain_capacity);
+                    // Check the ring buffer cache.
+                    // Recently decoded records are reused.
+                    if (self.cache.lookup(current.node)) |cached_value| {
+                        return Item{
+                            .network = ip_net,
+                            .value = cached_value,
+                        };
+                    }
+
+                    var entry_arena = std.heap.ArenaAllocator.init(self.allocator);
+                    errdefer entry_arena.deinit();
 
                     const value = try reader.resolveDataPointerAndDecode(
-                        self.arena.allocator(),
+                        entry_arena.allocator(),
                         T,
                         current.node,
                         self.fields,
                     );
+
+                    self.cache.insert(current.node, value, entry_arena);
 
                     return Item{
                         .network = ip_net,
@@ -457,7 +535,7 @@ pub fn Iterator(T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self.arena.deinit();
+            self.cache.deinit();
             self.stack.deinit(self.allocator);
         }
     };
