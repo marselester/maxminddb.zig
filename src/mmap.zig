@@ -4,7 +4,16 @@ pub fn map(f: std.fs.File) ![]const u8 {
     // TODO: We probably need CreateFileMapping, MapViewOfFile to support Windows,
     // see https://github.com/ziglang/zig/pull/21083.
 
-    const file_size = (try f.stat()).size;
+    const stat = try f.stat();
+    if (stat.kind != .file) {
+        return error.NotFile;
+    }
+
+    const file_size = stat.size;
+    if (file_size == 0) {
+        return error.FileEmpty;
+    }
+
     const page_size = std.heap.pageSize();
     const aligned_file_size = std.mem.alignForward(usize, file_size, page_size);
     const src = try std.posix.mmap(
