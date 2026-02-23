@@ -6,10 +6,10 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     defer _ = gpa.detectLeaks();
 
-    var args = std.process.args();
-    _ = args.next();
-    const db_path = args.next() orelse "test-data/test-data/GeoIP2-City-Test.mmdb";
-    const ip = args.next() orelse "89.160.20.128";
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    const db_path = if (args.len > 1) args[1] else "test-data/test-data/GeoIP2-City-Test.mmdb";
+    const ip = if (args.len > 2) args[2] else "89.160.20.128";
 
     var db = try maxminddb.Reader.mmap(allocator, db_path);
     defer db.unmap();
