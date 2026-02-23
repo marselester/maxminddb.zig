@@ -4,13 +4,20 @@ on: [push]
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+          - os: ubuntu-latest
+          - os: macos-latest
+          - os: macos-15-intel
+          - os: windows-latest
+
+    runs-on: ${{ matrix.os }}
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          sudo snap install zig --classic --beta
-          zig version
+      - uses: actions/checkout@v6
+      - uses: mlugg/setup-zig@v2
       - name: Fetch test-data
         run: git submodule update --init
       - name: Run tests
