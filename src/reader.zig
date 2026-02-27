@@ -1,5 +1,7 @@
 const std = @import("std");
+
 const decoder = @import("decoder.zig");
+const collection = @import("collection.zig");
 const memorymap = @import("mmap.zig");
 const net = @import("net.zig");
 
@@ -20,9 +22,9 @@ pub const Metadata = struct {
     binary_format_minor_version: u16 = 0,
     build_epoch: u64 = 0,
     database_type: []const u8 = "",
-    description: ?std.StringArrayHashMap([]const u8) = null,
+    description: ?collection.Map([]const u8) = null,
     ip_version: u16 = 0,
-    languages: ?std.ArrayList([]const u8) = null,
+    languages: ?collection.Array([]const u8) = null,
     node_count: u32 = 0,
     record_size: u16 = 0,
 };
@@ -30,7 +32,7 @@ pub const Metadata = struct {
 const data_section_separator_size = 16;
 
 pub const Options = struct {
-    only: ?decoder.Fields = null,
+    only: ?[]const []const u8 = null,
 };
 
 pub const Reader = struct {
@@ -152,7 +154,7 @@ pub const Reader = struct {
             arena.allocator(),
             T,
             pointer,
-            options.only,
+            options.only orelse &.{},
         );
 
         return .{
@@ -215,7 +217,7 @@ pub const Reader = struct {
             .stack = stack,
             .allocator = allocator,
             .cache = .{},
-            .fields = options.only,
+            .field_names = options.only orelse &.{},
         };
     }
 
@@ -229,7 +231,7 @@ pub const Reader = struct {
             .offset = 0,
         };
 
-        return try d.decodeRecord(allocator, Metadata, null);
+        return try d.decodeRecord(allocator, Metadata, &.{});
     }
 
     fn resolveDataPointerAndDecode(
@@ -237,7 +239,7 @@ pub const Reader = struct {
         allocator: std.mem.Allocator,
         T: type,
         pointer: usize,
-        fields: ?decoder.Fields,
+        field_names: []const []const u8,
     ) !T {
         const record_offset = try self.resolveDataPointer(pointer);
 
@@ -246,7 +248,7 @@ pub const Reader = struct {
             .offset = record_offset,
         };
 
-        return try d.decodeRecord(allocator, T, fields);
+        return try d.decodeRecord(allocator, T, field_names);
     }
 
     fn resolveDataPointer(self: *Reader, pointer: usize) !usize {
@@ -381,7 +383,7 @@ pub fn Iterator(T: type) type {
         node_count: usize,
         stack: std.ArrayList(WithinNode),
         allocator: std.mem.Allocator,
-        fields: ?decoder.Fields,
+        field_names: []const []const u8,
         cache: Cache,
 
         // Ring buffer cache of recently decoded records.
@@ -493,7 +495,7 @@ pub fn Iterator(T: type) type {
                         entry_arena.allocator(),
                         T,
                         current.node,
-                        self.fields,
+                        self.field_names,
                     );
 
                     self.cache.insert(current.node, value, entry_arena);

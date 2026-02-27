@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const any = @import("any.zig");
+
 pub const DecodeError = error{
     ExpectedStructType,
     ExpectedStringOrBytes,
@@ -47,135 +49,28 @@ const DataField = struct {
     type: FieldType,
 };
 
-/// Fields is a bitmask for selecting which top-level struct fields to decode.
-/// It also provides struct introspection methods that skip underscore-prefixed fields.
-pub const Fields = struct {
-    mask: u64 = 0,
-
-    /// Returns Fields with bits set for the given field names.
-    pub fn from(T: type, comptime field_names: []const []const u8) Fields {
-        var f = Fields{};
-        inline for (field_names) |name| {
-            f = f.set(index(T, name));
-        }
-
-        return f;
-    }
-
-    /// Parses a separated string of field names into Fields bitmask.
-    /// Returns .unknown_field if a name is unknown.
-    pub fn parse(comptime T: type, field_names: []const u8, delimiter: u8) union(enum) {
-        fields: Fields,
-        unknown_field: []const u8,
-    } {
-        var fields: Fields = .{};
-        var it = std.mem.splitScalar(u8, field_names, delimiter);
-        while (it.next()) |f| {
-            const name = std.mem.trim(u8, f, " ");
-            if (name.len == 0) {
-                continue;
-            }
-
-            var found = false;
-            inline for (entries(T), 0..) |entry, idx| {
-                if (std.mem.eql(u8, name, entry.name)) {
-                    fields = fields.set(idx);
-                    found = true;
-                }
-            }
-
-            if (!found) {
-                return .{ .unknown_field = name };
-            }
-        }
-
-        return .{ .fields = fields };
-    }
-
-    /// Returns Fields with all bits set for the given struct type (all fields included).
-    pub fn all(T: type) Fields {
-        return .{
-            .mask = (@as(u64, 1) << count(T)) - 1,
-        };
-    }
-
-    /// Returns new Fields with the bit at the given index set.
-    pub fn set(self: Fields, idx: u6) Fields {
-        return .{
-            .mask = self.mask | (@as(u64, 1) << idx),
-        };
-    }
-
-    /// Returns true if the named field's bit is set.
-    pub fn has(self: Fields, T: type, comptime name: []const u8) bool {
-        return self.mask & (@as(u64, 1) << index(T, name)) != 0;
-    }
-
-    /// Returns the number of non-underscore fields in the struct type.
-    pub fn count(T: type) comptime_int {
-        var n = 0;
-        for (std.meta.fields(T)) |f| {
-            if (f.name[0] != '_') {
-                n += 1;
-            }
-        }
-
-        return n;
-    }
-
-    /// Returns the index of a named field among non-underscore fields.
-    fn index(T: type, comptime name: []const u8) comptime_int {
-        var idx = 0;
-        for (std.meta.fields(T)) |f| {
-            if (f.name[0] == '_') {
-                continue;
-            }
-
-            if (std.mem.eql(u8, f.name, name)) {
-                return idx;
-            }
-
-            idx += 1;
-        }
-
-        @compileError("field '" ++ name ++ "' not found in " ++ @typeName(T));
-    }
-
-    /// Returns the non-underscore struct fields of T.
-    pub fn entries(T: type) []const std.builtin.Type.StructField {
-        var fields: [count(T)]std.builtin.Type.StructField = undefined;
-        var i = 0;
-        for (std.meta.fields(T)) |f| {
-            if (f.name[0] == '_') {
-                continue;
-            }
-
-            fields[i] = f;
-            i += 1;
-        }
-
-        return &fields;
-    }
-};
-
 pub const Decoder = struct {
     src: []const u8,
     offset: usize,
 
-    // Decodes a record of a given type (e.g., geolite2.City) from the current offset in the src.
+    // Decodes a record of a given type, e.g., geolite2.City, from the current offset in the src.
     // It allocates maps and arrays, but it doesn't duplicate byte slices to save memory.
     // This means that strings such as geolite2.City.postal.code are backed by the src's array,
     // so the caller should create a copy of the record when the src is freed (when the database is closed).
     //
-    // When fields provided, only top-level fields whose bit is set are decoded; others are skipped.
+    // When field_names is non-empty, only top-level fields matching the given names are decoded.
     pub fn decodeRecord(
         self: *Decoder,
         allocator: std.mem.Allocator,
         T: type,
-        fields: ?Fields,
+        field_names: []const []const u8,
     ) !T {
+        if (T == any.Value) {
+            return try self.decodeAnyValue(allocator, field_names);
+        }
+
         const data_field = try self.decodeFieldSizeAndType();
-        return try self.decodeStruct(allocator, T, data_field, fields);
+        return try self.decodeStruct(allocator, T, data_field, field_names);
     }
 
     fn decodeStruct(
@@ -183,7 +78,7 @@ pub const Decoder = struct {
         allocator: std.mem.Allocator,
         T: type,
         data_field: DataField,
-        fields: ?Fields,
+        field_names: []const []const u8,
     ) !T {
         if (data_field.type != FieldType.Map) {
             return DecodeError.ExpectedStructType;
@@ -212,12 +107,10 @@ pub const Decoder = struct {
                 }
 
                 if (std.mem.eql(u8, map_key, f.name)) {
-                    if (fields) |fs| {
-                        if (!fs.has(T, f.name)) {
-                            try self.skipValue();
-                            found = true;
-                            break;
-                        }
+                    if (!matchesFilter(field_names, f.name)) {
+                        try self.skipValue();
+                        found = true;
+                        break;
                     }
 
                     const map_value = try self.decodeValue(allocator, f.type);
@@ -238,7 +131,7 @@ pub const Decoder = struct {
 
     // Skips a value in the database without decoding it.
     // This is used when the database has fields that don't exist in the target struct
-    // or are excluded by Fields filtering.
+    // or are excluded by field name filtering.
     fn skipValue(self: *Decoder) !void {
         const field = try self.decodeFieldSizeAndType();
 
@@ -312,7 +205,7 @@ pub const Decoder = struct {
             // Float
             f32 => if (field.type == FieldType.Float) try self.decodeFloat(field.size) else DecodeError.ExpectedFloat,
             else => {
-                // We support Structs or Optional Structs only to safely decode arrays and hashmaps.
+                // We support Structs or Optional Structs only to safely decode arrays and maps.
                 comptime var DecodedType: type = T;
                 switch (@typeInfo(DecodedType)) {
                     .@"struct" => {},
@@ -320,61 +213,114 @@ pub const Decoder = struct {
                         DecodedType = opt.child;
                         switch (@typeInfo(DecodedType)) {
                             .@"struct" => {},
-                            else => {
-                                std.debug.print("expected field {any} got optional {any}\n", .{ field, DecodedType });
-                                return DecodeError.UnsupportedFieldType;
-                            },
+                            else => return DecodeError.UnsupportedFieldType,
                         }
                     },
-                    else => {
-                        std.debug.print("expected field {any} got {any}\n", .{ field, DecodedType });
-                        return DecodeError.UnsupportedFieldType;
-                    },
+                    else => return DecodeError.UnsupportedFieldType,
                 }
 
-                // Decode Map into std.hash_map.HashMap.
-                if (@hasDecl(DecodedType, "KV")) {
+                // Decode Map into []Entry slice.
+                if (@hasDecl(DecodedType, "map_marker")) {
                     if (field.type != FieldType.Map) {
                         return DecodeError.ExpectedMap;
                     }
 
-                    const Key = std.meta.fieldInfo(DecodedType.KV, .key).type;
-                    const Value = std.meta.fieldInfo(DecodedType.KV, .value).type;
-                    var map = DecodedType.init(allocator);
-                    const map_len = field.size;
-                    try map.ensureTotalCapacity(map_len);
-
-                    for (0..map_len) |_| {
-                        const key = try self.decodeValue(allocator, Key);
-                        const value = try self.decodeValue(allocator, Value);
-                        map.putAssumeCapacity(key, value);
+                    const entries = try allocator.alloc(DecodedType.Entry, field.size);
+                    for (entries) |*e| {
+                        e.key = try self.decodeValue(allocator, []const u8);
+                        e.value = try self.decodeValue(
+                            allocator,
+                            std.meta.fieldInfo(DecodedType.Entry, .value).type,
+                        );
                     }
 
-                    return map;
+                    return DecodedType{ .entries = entries };
                 }
 
-                // Decode Array into std.ArrayList.
-                if (@hasDecl(DecodedType, "Slice")) {
+                // Decode Array into a slice.
+                if (@hasDecl(DecodedType, "array_marker")) {
                     if (field.type != FieldType.Array) {
                         return DecodeError.ExpectedArray;
                     }
 
-                    const Value = std.meta.Child(DecodedType.Slice);
-                    const array_len = field.size;
-                    var array = try std.ArrayList(Value).initCapacity(allocator, array_len);
-
-                    for (0..array_len) |_| {
-                        const value = try self.decodeValue(allocator, Value);
-                        array.appendAssumeCapacity(value);
+                    const ChildType = @typeInfo(
+                        std.meta.fieldInfo(DecodedType, .items).type,
+                    ).pointer.child;
+                    const items = try allocator.alloc(ChildType, field.size);
+                    for (items) |*item| {
+                        item.* = try self.decodeValue(allocator, ChildType);
                     }
 
-                    return array;
+                    return DecodedType{ .items = items };
                 }
 
                 // Decode Map into a struct, e.g., geolite2.City.continent.
-                // Nested structs are always fully decoded (no Fields mask).
-                return try self.decodeStruct(allocator, T, field, null);
+                // Nested structs are always fully decoded (no field filtering).
+                return try self.decodeStruct(allocator, T, field, &.{});
             },
+        };
+    }
+
+    // Decodes a value into the Value union based on the database field type.
+    // When field_names is non-empty, only top-level map entries matching those names are decoded;
+    // the rest are skipped. Nested values are always fully decoded.
+    fn decodeAnyValue(
+        self: *Decoder,
+        allocator: std.mem.Allocator,
+        field_names: []const []const u8,
+    ) !any.Value {
+        const field = try self.decodeFieldSizeAndType();
+
+        if (field.type == FieldType.Pointer) {
+            const next_offset = self.decodePointer(field.size);
+            const prev_offset = self.offset;
+
+            self.offset = next_offset;
+            const v = try self.decodeAnyValue(allocator, field_names);
+            self.offset = prev_offset;
+
+            return v;
+        }
+
+        return switch (field.type) {
+            .String, .Bytes => .{ .string = self.decodeBytes(field.size) },
+            .Double => .{ .double = try self.decodeDouble(field.size) },
+            .Float => .{ .float = try self.decodeFloat(field.size) },
+            .Uint16 => .{ .uint16 = try self.decodeInteger(u16, field.size) },
+            .Uint32 => .{ .uint32 = try self.decodeInteger(u32, field.size) },
+            .Int32 => .{ .int32 = try self.decodeInteger(i32, field.size) },
+            .Uint64 => .{ .uint64 = try self.decodeInteger(u64, field.size) },
+            .Uint128 => .{ .uint128 = try self.decodeInteger(u128, field.size) },
+            .Bool => .{ .boolean = try self.decodeBool(field.size) },
+            .Array => {
+                const items = try allocator.alloc(any.Value, field.size);
+                for (items) |*item| {
+                    item.* = try self.decodeAnyValue(allocator, &.{});
+                }
+
+                return .{ .array = items };
+            },
+            .Map => {
+                const entries = try allocator.alloc(any.Value.Entry, field.size);
+                var n: usize = 0;
+                for (0..field.size) |_| {
+                    const key = try self.decodeValue(allocator, []const u8);
+
+                    if (!matchesFilter(field_names, key)) {
+                        try self.skipValue();
+                        continue;
+                    }
+
+                    entries[n] = .{
+                        .key = key,
+                        .value = try self.decodeAnyValue(allocator, &.{}),
+                    };
+                    n += 1;
+                }
+
+                return .{ .map = entries[0..n] };
+            },
+            else => DecodeError.UnsupportedFieldType,
         };
     }
 
@@ -541,6 +487,20 @@ pub const Decoder = struct {
     }
 };
 
+fn matchesFilter(field_names: []const []const u8, name: []const u8) bool {
+    if (field_names.len == 0) {
+        return true;
+    }
+
+    for (field_names) |n| {
+        if (std.mem.eql(u8, n, name)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 test "decodeFieldSize returns raw size for pointer type" {
     // The pointer control byte layout is 001SSVVV where SS is the pointer size
     // indicator (0-3) and VVV are the 3 value bits used for 1-3 byte pointers.
@@ -576,100 +536,4 @@ pub fn toUsize(bytes: []const u8, prefix: usize) usize {
     }
 
     return val;
-}
-
-const TestRecord = struct {
-    city: u32 = 0,
-    country: u32 = 0,
-    _fizz: bool = false,
-    location: u32 = 0,
-    _arena: u32 = 0,
-};
-
-test "Fields.from sets bits for named fields" {
-    const f = Fields.from(TestRecord, &.{ "city", "location" });
-    try std.testing.expectEqual(true, f.has(TestRecord, "city"));
-    try std.testing.expectEqual(false, f.has(TestRecord, "country"));
-    try std.testing.expectEqual(true, f.has(TestRecord, "location"));
-}
-
-test "Fields.parse" {
-    const tests = [_]struct {
-        input: []const u8,
-        want_fields: ?Fields = null,
-        want_err: ?[]const u8 = null,
-    }{
-        .{
-            .input = "city,location",
-            .want_fields = Fields.from(TestRecord, &.{ "city", "location" }),
-        },
-        .{
-            .input = " city , location ",
-            .want_fields = Fields.from(TestRecord, &.{ "city", "location" }),
-        },
-        .{
-            .input = "",
-            .want_fields = Fields{},
-        },
-        .{
-            .input = " ,, , ",
-            .want_fields = Fields{},
-        },
-        .{
-            .input = "city",
-            .want_fields = Fields.from(TestRecord, &.{"city"}),
-        },
-        .{
-            .input = "city,country,location",
-            .want_fields = Fields.all(TestRecord),
-        },
-        .{
-            .input = "city,city",
-            .want_fields = Fields.from(TestRecord, &.{"city"}),
-        },
-        .{
-            .input = "city,bogus",
-            .want_err = "bogus",
-        },
-    };
-
-    for (tests) |tc| {
-        switch (Fields.parse(TestRecord, tc.input, ',')) {
-            .fields => |f| try std.testing.expectEqual(tc.want_fields.?, f),
-            .unknown_field => |name| try std.testing.expectEqualStrings(tc.want_err.?, name),
-        }
-    }
-}
-
-test "Fields.all sets all bits" {
-    const f = Fields.all(TestRecord);
-    try std.testing.expectEqual(true, f.has(TestRecord, "city"));
-    try std.testing.expectEqual(true, f.has(TestRecord, "country"));
-    try std.testing.expectEqual(true, f.has(TestRecord, "location"));
-}
-
-test "Fields.set sets bit at index" {
-    var f = Fields{};
-    f = f.set(1);
-    try std.testing.expectEqual(false, f.has(TestRecord, "city"));
-    try std.testing.expectEqual(true, f.has(TestRecord, "country"));
-    try std.testing.expectEqual(false, f.has(TestRecord, "location"));
-}
-
-test "Fields.count excludes underscore fields" {
-    try std.testing.expectEqual(3, Fields.count(TestRecord));
-}
-
-test "Fields.index returns position among non-underscore fields" {
-    try std.testing.expectEqual(0, Fields.index(TestRecord, "city"));
-    try std.testing.expectEqual(1, Fields.index(TestRecord, "country"));
-    try std.testing.expectEqual(2, Fields.index(TestRecord, "location"));
-}
-
-test "Fields.entries returns non-underscore fields" {
-    const e = Fields.entries(TestRecord);
-    try std.testing.expectEqual(3, e.len);
-    try std.testing.expectEqualStrings("city", e[0].name);
-    try std.testing.expectEqualStrings("country", e[1].name);
-    try std.testing.expectEqualStrings("location", e[2].name);
 }
