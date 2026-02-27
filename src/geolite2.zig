@@ -1,6 +1,4 @@
-const std = @import("std");
-
-pub const Names = std.StringArrayHashMap([]const u8);
+const collection = @import("collection.zig");
 
 /// Country represents a record in the GeoLite2-Country database, for example,
 /// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoLite2-Country-Test.json.
@@ -16,19 +14,19 @@ pub const Country = struct {
     pub const Continent = struct {
         code: []const u8 = "",
         geoname_id: u32 = 0,
-        names: ?Names = null,
+        names: ?collection.Map([]const u8) = null,
     };
     pub const Country = struct {
         geoname_id: u32 = 0,
         is_in_european_union: bool = false,
         iso_code: []const u8 = "",
-        names: ?Names = null,
+        names: ?collection.Map([]const u8) = null,
     };
     pub const RepresentedCountry = struct {
         geoname_id: u32 = 0,
         is_in_european_union: bool = false,
         iso_code: []const u8 = "",
-        names: ?Names = null,
+        names: ?collection.Map([]const u8) = null,
         type: []const u8 = "",
     };
 };
@@ -44,12 +42,12 @@ pub const City = struct {
     postal: Self.Postal = .{},
     registered_country: Country.Country = .{},
     represented_country: Country.RepresentedCountry = .{},
-    subdivisions: ?std.ArrayList(Self.Subdivision) = null,
+    subdivisions: ?collection.Array(Self.Subdivision) = null,
 
     const Self = @This();
     pub const City = struct {
         geoname_id: u32 = 0,
-        names: ?Names = null,
+        names: ?collection.Map([]const u8) = null,
     };
     pub const Location = struct {
         accuracy_radius: u16 = 0,
@@ -64,7 +62,7 @@ pub const City = struct {
     pub const Subdivision = struct {
         geoname_id: u32 = 0,
         iso_code: []const u8 = "",
-        names: ?Names = null,
+        names: ?collection.Map([]const u8) = null,
     };
 };
 

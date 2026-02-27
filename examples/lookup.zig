@@ -19,8 +19,7 @@ pub fn main() !void {
     const city = try db.lookup(allocator, maxminddb.geoip2.City, ip, .{}) orelse return;
     defer city.deinit();
 
-    var it = city.value.country.names.?.iterator();
-    while (it.next()) |kv| {
-        std.debug.print("{s} = {s}\n", .{ kv.key_ptr.*, kv.value_ptr.* });
+    for (city.value.country.names.?.entries) |e| {
+        std.debug.print("{s} = {s}\n", .{ e.key, e.value });
     }
 }

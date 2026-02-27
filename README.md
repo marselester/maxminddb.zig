@@ -53,7 +53,7 @@ Here is how you can decode `City.city` and `City.country` fields.
 
 ```zig
 // This gets us ~34% of performance gains, i.e., ~859K lookups per second.
-const fields = maxminddb.Fields.from(maxminddb.geolite2.City, &.{ "city", "country" });
+const fields = &.{ "city", "country" };
 const city = try db.lookup(allocator, maxminddb.geolite2.City, ip, .{ .only = fields });
 ```
 

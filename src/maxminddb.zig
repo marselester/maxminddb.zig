@@ -2,7 +2,10 @@ const std = @import("std");
 
 const reader = @import("reader.zig");
 const decoder = @import("decoder.zig");
+const collection = @import("collection.zig");
 const net = @import("net.zig");
+
+pub const any = @import("any.zig");
 pub const geolite2 = @import("geolite2.zig");
 pub const geoip2 = @import("geoip2.zig");
 
@@ -13,7 +16,8 @@ pub const Metadata = reader.Metadata;
 pub const Iterator = reader.Iterator;
 pub const Network = net.Network;
 pub const Options = reader.Options;
-pub const Fields = decoder.Fields;
+pub const Map = collection.Map;
+pub const Array = collection.Array;
 
 /// Maps the metadata.database_type to a known GeoLite/GeoIP record type.
 pub const DatabaseType = enum {
@@ -88,11 +92,11 @@ test {
 }
 
 fn expectEqualMaps(
-    map: std.StringArrayHashMap([]const u8),
+    map: anytype,
     keys: []const []const u8,
     values: []const []const u8,
 ) !void {
-    try std.testing.expectEqual(map.count(), keys.len);
+    try std.testing.expectEqual(map.entries.len, keys.len);
 
     for (keys, values) |key, want_value| {
         const got_value = map.get(key) orelse {
@@ -243,7 +247,7 @@ test "GeoLite2 City" {
     try expectEqualDeep(geolite2.Country.RepresentedCountry{}, got.value.represented_country);
 
     try expectEqual(1, got.value.subdivisions.?.items.len);
-    const sub = got.value.subdivisions.?.getLast();
+    const sub = got.value.subdivisions.?.items[0];
     try expectEqual(2685867, sub.geoname_id);
     try expectEqualStrings("E", sub.iso_code);
     try expectEqualMaps(
@@ -418,7 +422,7 @@ test "GeoIP2 City" {
     try expectEqualDeep(geoip2.Country.RepresentedCountry{}, got.value.represented_country);
 
     try expectEqual(1, got.value.subdivisions.?.items.len);
-    const sub = got.value.subdivisions.?.getLast();
+    const sub = got.value.subdivisions.?.items[0];
     try expectEqual(2685867, sub.geoname_id);
     try expectEqualStrings("E", sub.iso_code);
     try expectEqualMaps(
@@ -511,7 +515,7 @@ test "GeoIP2 Enterprise" {
     try expectEqualDeep(geoip2.Enterprise.RepresentedCountry{}, got.value.represented_country);
 
     try expectEqual(1, got.value.subdivisions.?.items.len);
-    const sub = got.value.subdivisions.?.getLast();
+    const sub = got.value.subdivisions.?.items[0];
     try expectEqual(93, sub.confidence);
     try expectEqual(5128638, sub.geoname_id);
     try expectEqualStrings("NY", sub.iso_code);
@@ -748,7 +752,7 @@ test "GeoIP2 User-Count" {
     try expectEqualDeep(want, got.value);
 }
 
-test "lookup with Fields filtering" {
+test "lookup with field name filtering" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoLite2-City-Test.mmdb",
@@ -757,8 +761,12 @@ test "lookup with Fields filtering" {
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
 
-    const fields = Fields.from(geolite2.City, &.{ "city", "country" });
-    const got = (try db.lookup(allocator, geolite2.City, ip, .{ .only = fields })).?;
+    const got = (try db.lookup(
+        allocator,
+        geolite2.City,
+        ip,
+        .{ .only = &.{ "city", "country" } },
+    )).?;
     defer got.deinit();
 
     // Filtered fields are decoded.
@@ -795,6 +803,56 @@ test "lookup with custom record" {
 
     try expectEqual(2694762, got.value.city.geoname_id);
     try expectEqualStrings("Linköping", got.value.city.names.en);
+}
+
+test "lookup with any.Value" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+    );
+    defer db.unmap();
+
+    const ip = try std.net.Address.parseIp("89.160.20.128", 0);
+    const got = (try db.lookup(allocator, any.Value, ip, .{})).?;
+    defer got.deinit();
+
+    const city = got.value.get("city").?;
+    try expectEqual(2694762, city.get("geoname_id").?.uint32);
+
+    const names = city.get("names").?;
+    try expectEqualStrings("Linköping", names.get("en").?.string);
+
+    const country = got.value.get("country").?;
+    try expectEqualStrings("SE", country.get("iso_code").?.string);
+    try expectEqual(true, country.get("is_in_european_union").?.boolean);
+}
+
+test "lookup with any.Value and field name filtering" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+    );
+    defer db.unmap();
+
+    const ip = try std.net.Address.parseIp("89.160.20.128", 0);
+    const got = (try db.lookup(
+        allocator,
+        any.Value,
+        ip,
+        .{ .only = &.{ "city", "country" } },
+    )).?;
+    defer got.deinit();
+
+    // Filtered fields are decoded.
+    const city = got.value.get("city").?;
+    try expectEqual(2694762, city.get("geoname_id").?.uint32);
+
+    const country = got.value.get("country").?;
+    try expectEqualStrings("SE", country.get("iso_code").?.string);
+
+    // Non-filtered fields are absent.
+    try expectEqual(null, got.value.get("continent"));
+    try expectEqual(null, got.value.get("location"));
 }
 
 test "within returns all networks" {
