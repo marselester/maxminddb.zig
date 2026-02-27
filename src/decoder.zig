@@ -101,11 +101,6 @@ pub const Decoder = struct {
 
             var found = false;
             inline for (std.meta.fields(T)) |f| {
-                // Skip struct fields whose name starts with an underscore.
-                if (f.name[0] == '_') {
-                    continue;
-                }
-
                 if (std.mem.eql(u8, map_key, f.name)) {
                     if (!matchesFilter(field_names, f.name)) {
                         try self.skipValue();
@@ -266,9 +261,9 @@ pub const Decoder = struct {
                         return DecodeError.ExpectedArray;
                     }
 
-                    const ChildType = @typeInfo(
+                    const ChildType = std.meta.Elem(
                         std.meta.fieldInfo(DecodedType, .items).type,
-                    ).pointer.child;
+                    );
                     const items = try allocator.alloc(ChildType, field.size);
                     for (items) |*item| {
                         item.* = try self.decodeValue(allocator, ChildType);
