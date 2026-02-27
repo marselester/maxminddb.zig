@@ -761,7 +761,12 @@ test "lookup with field name filtering" {
 
     const ip = try std.net.Address.parseIp("89.160.20.128", 0);
 
-    const got = (try db.lookup(allocator, geolite2.City, ip, .{ .only = &.{ "city", "country" } })).?;
+    const got = (try db.lookup(
+        allocator,
+        geolite2.City,
+        ip,
+        .{ .only = &.{ "city", "country" } },
+    )).?;
     defer got.deinit();
 
     // Filtered fields are decoded.
@@ -798,6 +803,56 @@ test "lookup with custom record" {
 
     try expectEqual(2694762, got.value.city.geoname_id);
     try expectEqualStrings("Linköping", got.value.city.names.en);
+}
+
+test "lookup with any.Value" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+    );
+    defer db.unmap();
+
+    const ip = try std.net.Address.parseIp("89.160.20.128", 0);
+    const got = (try db.lookup(allocator, any.Value, ip, .{})).?;
+    defer got.deinit();
+
+    const city = got.value.get("city").?;
+    try expectEqual(2694762, city.get("geoname_id").?.uint32);
+
+    const names = city.get("names").?;
+    try expectEqualStrings("Linköping", names.get("en").?.string);
+
+    const country = got.value.get("country").?;
+    try expectEqualStrings("SE", country.get("iso_code").?.string);
+    try expectEqual(true, country.get("is_in_european_union").?.boolean);
+}
+
+test "lookup with any.Value and field name filtering" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+    );
+    defer db.unmap();
+
+    const ip = try std.net.Address.parseIp("89.160.20.128", 0);
+    const got = (try db.lookup(
+        allocator,
+        any.Value,
+        ip,
+        .{ .only = &.{ "city", "country" } },
+    )).?;
+    defer got.deinit();
+
+    // Filtered fields are decoded.
+    const city = got.value.get("city").?;
+    try expectEqual(2694762, city.get("geoname_id").?.uint32);
+
+    const country = got.value.get("country").?;
+    try expectEqualStrings("SE", country.get("iso_code").?.string);
+
+    // Non-filtered fields are absent.
+    try expectEqual(null, got.value.get("continent"));
+    try expectEqual(null, got.value.get("location"));
 }
 
 test "within returns all networks" {

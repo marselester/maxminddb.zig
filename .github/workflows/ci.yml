@@ -19,3 +19,5 @@ jobs:
         run: zig build example_lookup
       - name: Run within example
         run: zig build example_within
+      - name: Run inspect example
+        run: zig build example_inspect

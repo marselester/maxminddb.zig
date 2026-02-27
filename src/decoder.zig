@@ -129,10 +129,14 @@ pub const Decoder = struct {
         return record;
     }
 
-    // Skips a value in the database without decoding it.
-    // This is used when the database has fields that don't exist in the target struct
-    // or are excluded by field name filtering.
-    fn skipValue(self: *Decoder) !void {
+    // Decodes a value into the Value union based on the database field type.
+    // When field_names is non-empty, only top-level map entries matching those names are decoded;
+    // the rest are skipped. Nested values are always fully decoded.
+    fn decodeAnyValue(
+        self: *Decoder,
+        allocator: std.mem.Allocator,
+        field_names: []const []const u8,
+    ) !any.Value {
         const field = try self.decodeFieldSizeAndType();
 
         if (field.type == FieldType.Pointer) {
@@ -140,33 +144,52 @@ pub const Decoder = struct {
             const prev_offset = self.offset;
 
             self.offset = next_offset;
-            try self.skipValue();
+            const v = try self.decodeAnyValue(allocator, field_names);
             self.offset = prev_offset;
 
-            return;
+            return v;
         }
 
-        switch (field.type) {
-            // Bool has no payload, size is encoded in the control byte.
-            .Bool => {},
-            // Skip each array element.
+        return switch (field.type) {
+            .String, .Bytes => .{ .string = self.decodeBytes(field.size) },
+            .Double => .{ .double = try self.decodeDouble(field.size) },
+            .Float => .{ .float = try self.decodeFloat(field.size) },
+            .Uint16 => .{ .uint16 = try self.decodeInteger(u16, field.size) },
+            .Uint32 => .{ .uint32 = try self.decodeInteger(u32, field.size) },
+            .Int32 => .{ .int32 = try self.decodeInteger(i32, field.size) },
+            .Uint64 => .{ .uint64 = try self.decodeInteger(u64, field.size) },
+            .Uint128 => .{ .uint128 = try self.decodeInteger(u128, field.size) },
+            .Bool => .{ .boolean = try self.decodeBool(field.size) },
             .Array => {
-                for (0..field.size) |_| {
-                    try self.skipValue();
+                const items = try allocator.alloc(any.Value, field.size);
+                for (items) |*item| {
+                    item.* = try self.decodeAnyValue(allocator, &.{});
                 }
+
+                return .{ .array = items };
             },
-            // Skip each map key-value pair.
             .Map => {
+                const entries = try allocator.alloc(any.Value.Entry, field.size);
+                var n: usize = 0;
                 for (0..field.size) |_| {
-                    try self.skipValue();
-                    try self.skipValue();
+                    const key = try self.decodeValue(allocator, []const u8);
+
+                    if (!matchesFilter(field_names, key)) {
+                        try self.skipValue();
+                        continue;
+                    }
+
+                    entries[n] = .{
+                        .key = key,
+                        .value = try self.decodeAnyValue(allocator, &.{}),
+                    };
+                    n += 1;
                 }
+
+                return .{ .map = entries[0..n] };
             },
-            // For other types, just advance the offset.
-            else => {
-                self.offset += field.size;
-            },
-        }
+            else => DecodeError.UnsupportedFieldType,
+        };
     }
 
     // Decodes a struct's field value which can be a built-in data type or another struct.
@@ -261,14 +284,10 @@ pub const Decoder = struct {
         };
     }
 
-    // Decodes a value into the Value union based on the database field type.
-    // When field_names is non-empty, only top-level map entries matching those names are decoded;
-    // the rest are skipped. Nested values are always fully decoded.
-    fn decodeAnyValue(
-        self: *Decoder,
-        allocator: std.mem.Allocator,
-        field_names: []const []const u8,
-    ) !any.Value {
+    // Skips a value in the database without decoding it.
+    // This is used when the database has fields that don't exist in the target struct
+    // or are excluded by field name filtering.
+    fn skipValue(self: *Decoder) !void {
         const field = try self.decodeFieldSizeAndType();
 
         if (field.type == FieldType.Pointer) {
@@ -276,52 +295,33 @@ pub const Decoder = struct {
             const prev_offset = self.offset;
 
             self.offset = next_offset;
-            const v = try self.decodeAnyValue(allocator, field_names);
+            try self.skipValue();
             self.offset = prev_offset;
 
-            return v;
+            return;
         }
 
-        return switch (field.type) {
-            .String, .Bytes => .{ .string = self.decodeBytes(field.size) },
-            .Double => .{ .double = try self.decodeDouble(field.size) },
-            .Float => .{ .float = try self.decodeFloat(field.size) },
-            .Uint16 => .{ .uint16 = try self.decodeInteger(u16, field.size) },
-            .Uint32 => .{ .uint32 = try self.decodeInteger(u32, field.size) },
-            .Int32 => .{ .int32 = try self.decodeInteger(i32, field.size) },
-            .Uint64 => .{ .uint64 = try self.decodeInteger(u64, field.size) },
-            .Uint128 => .{ .uint128 = try self.decodeInteger(u128, field.size) },
-            .Bool => .{ .boolean = try self.decodeBool(field.size) },
+        switch (field.type) {
+            // Bool has no payload, size is encoded in the control byte.
+            .Bool => {},
+            // Skip each array element.
             .Array => {
-                const items = try allocator.alloc(any.Value, field.size);
-                for (items) |*item| {
-                    item.* = try self.decodeAnyValue(allocator, &.{});
-                }
-
-                return .{ .array = items };
-            },
-            .Map => {
-                const entries = try allocator.alloc(any.Value.Entry, field.size);
-                var n: usize = 0;
                 for (0..field.size) |_| {
-                    const key = try self.decodeValue(allocator, []const u8);
-
-                    if (!matchesFilter(field_names, key)) {
-                        try self.skipValue();
-                        continue;
-                    }
-
-                    entries[n] = .{
-                        .key = key,
-                        .value = try self.decodeAnyValue(allocator, &.{}),
-                    };
-                    n += 1;
+                    try self.skipValue();
                 }
-
-                return .{ .map = entries[0..n] };
             },
-            else => DecodeError.UnsupportedFieldType,
-        };
+            // Skip each map key-value pair.
+            .Map => {
+                for (0..field.size) |_| {
+                    try self.skipValue();
+                    try self.skipValue();
+                }
+            },
+            // For other types, just advance the offset.
+            else => {
+                self.offset += field.size;
+            },
+        }
     }
 
     // Decodes a pointer to another part of the data section's address space.
@@ -501,6 +501,34 @@ fn matchesFilter(field_names: []const []const u8, name: []const u8) bool {
     return false;
 }
 
+// Converts the bytes slice to usize.
+pub fn toUsize(bytes: []const u8, prefix: usize) usize {
+    var val = prefix;
+    for (bytes) |b| {
+        val = (val << 8) | b;
+    }
+
+    return val;
+}
+
+test matchesFilter {
+    const filter = &.{ "city", "country" };
+    const tests = [_]struct {
+        field_names: []const []const u8,
+        name: []const u8,
+        want: bool,
+    }{
+        .{ .field_names = &.{}, .name = "anything", .want = true },
+        .{ .field_names = filter, .name = "city", .want = true },
+        .{ .field_names = filter, .name = "country", .want = true },
+        .{ .field_names = filter, .name = "continent", .want = false },
+    };
+
+    for (tests) |tc| {
+        try std.testing.expectEqual(tc.want, matchesFilter(tc.field_names, tc.name));
+    }
+}
+
 test "decodeFieldSize returns raw size for pointer type" {
     // The pointer control byte layout is 001SSVVV where SS is the pointer size
     // indicator (0-3) and VVV are the 3 value bits used for 1-3 byte pointers.
@@ -526,14 +554,4 @@ test "decodeFieldSize returns raw size for pointer type" {
     try std.testing.expectEqual(29, size);
     // Offset must not advance, i.e., no extra bytes read for size extension.
     try std.testing.expectEqual(0, d.offset);
-}
-
-// Converts the bytes slice to usize.
-pub fn toUsize(bytes: []const u8, prefix: usize) usize {
-    var val = prefix;
-    for (bytes) |b| {
-        val = (val << 8) | b;
-    }
-
-    return val;
 }

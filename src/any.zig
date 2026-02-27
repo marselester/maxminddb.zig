@@ -1,3 +1,5 @@
+const std = @import("std");
+
 /// A tagged union that can hold any MaxMind DB data type.
 /// Use instead of a predefined struct to decode any record without knowing the schema.
 pub const Value = union(enum) {
@@ -17,6 +19,22 @@ pub const Value = union(enum) {
         key: []const u8,
         value: Value,
     };
+
+    /// Returns the value for the given key if this Value is a map, or null otherwise.
+    pub fn get(self: Value, key: []const u8) ?Value {
+        switch (self) {
+            .map => |entries| {
+                for (entries) |e| {
+                    if (std.mem.eql(u8, e.key, key)) {
+                        return e.value;
+                    }
+                }
+
+                return null;
+            },
+            else => return null,
+        }
+    }
 
     pub fn format(self: Value, writer: anytype) !void {
         switch (self) {
