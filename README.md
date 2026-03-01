@@ -75,7 +75,7 @@ const city = try db.lookup(allocator, MyCity, ip, .{});
 Decoding `MyCity` increases throughput by up to 60% (639,848 vs 1,025,477 lookups per second).
 
 ```sh
-$ zig build example_benchmark
+$ zig build example_benchmark -Doptimize=ReleaseFast
 ```
 
 <details>

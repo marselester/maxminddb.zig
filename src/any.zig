@@ -82,122 +82,10 @@ pub const Value = union(enum) {
             },
         }
     }
-
-    /// Formats the Value as JSON directly into a buffer.
-    /// Returns a slice of the bytes written.
-    /// Strings are not escaped.
-    pub fn formatBuf(self: Value, buf: []u8) error{NoSpaceLeft}![]u8 {
-        var enc = JSONEncoder{ .out = buf };
-        try enc.encode(self);
-
-        return buf[0..enc.pos];
-    }
-};
-
-const JSONEncoder = struct {
-    out: []u8,
-    pos: usize = 0,
-    // Space shared by int and float formatting.
-    // 40 bytes fits u128 max (39 digits) and should be sufficient for most floats.
-    tmp: [40]u8 = undefined,
-
-    const Error = error{
-        NoSpaceLeft,
-    };
-
-    fn encode(self: *JSONEncoder, v: Value) Error!void {
-        switch (v) {
-            .string => |s| try self.string(s),
-            .int32 => |n| try self.int(n),
-            .uint16, .uint32, .uint64 => |n| try self.int(n),
-            .uint128 => |n| {
-                try self.byte('"');
-                try self.int(n);
-                try self.byte('"');
-            },
-            .double, .float => |f| try self.float(f),
-            .boolean => |b| try self.slice(if (b) "true" else "false"),
-            .array => |items| {
-                try self.byte('[');
-
-                for (items, 0..) |item, i| {
-                    if (i > 0) {
-                        try self.byte(',');
-                    }
-
-                    try self.encode(item);
-                }
-
-                try self.byte(']');
-            },
-            .map => |entries| {
-                try self.byte('{');
-
-                for (entries, 0..) |entry, i| {
-                    if (i > 0) {
-                        try self.byte(',');
-                    }
-
-                    try self.string(entry.key);
-                    try self.byte(':');
-                    try self.encode(entry.value);
-                }
-
-                try self.byte('}');
-            },
-        }
-    }
-
-    fn string(self: *JSONEncoder, s: []const u8) Error!void {
-        if (self.pos + s.len + 2 > self.out.len) {
-            return error.NoSpaceLeft;
-        }
-
-        self.out[self.pos] = '"';
-        self.pos += 1;
-
-        @memcpy(self.out[self.pos..][0..s.len], s);
-        self.pos += s.len;
-
-        self.out[self.pos] = '"';
-        self.pos += 1;
-    }
-
-    fn int(self: *JSONEncoder, v: anytype) Error!void {
-        const end = std.fmt.printInt(&self.tmp, v, 10, .lower, .{});
-        try self.slice(self.tmp[0..end]);
-    }
-
-    fn float(self: *JSONEncoder, v: anytype) Error!void {
-        var w = std.io.Writer.fixed(&self.tmp);
-        w.print("{d}", .{v}) catch return error.NoSpaceLeft;
-        try self.slice(self.tmp[0..w.end]);
-    }
-
-    fn byte(self: *JSONEncoder, b: u8) Error!void {
-        if (self.pos >= self.out.len) {
-            return error.NoSpaceLeft;
-        }
-
-        self.out[self.pos] = b;
-        self.pos += 1;
-    }
-
-    fn slice(self: *JSONEncoder, s: []const u8) Error!void {
-        if (self.pos + s.len > self.out.len) {
-            return error.NoSpaceLeft;
-        }
-
-        @memcpy(self.out[self.pos..][0..s.len], s);
-        self.pos += s.len;
-    }
 };
 
 fn expectJSON(expected: []const u8, v: Value) !void {
     var out: [4096]u8 = undefined;
-
-    const got = try v.formatBuf(&out);
-    try std.testing.expectEqualStrings(expected, got);
 
     var w = std.io.Writer.fixed(&out);
     try v.format(&w);
@@ -366,14 +254,6 @@ test "encode nested" {
             },
         },
     });
-}
-
-test "formatBuf NoSpaceLeft" {
-    var buf: [3]u8 = undefined;
-    try std.testing.expectError(
-        error.NoSpaceLeft,
-        (Value{ .string = "hello" }).formatBuf(&buf),
-    );
 }
 
 test "get" {
