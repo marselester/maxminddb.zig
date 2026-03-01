@@ -14,15 +14,6 @@ pub fn main() !void {
     var db = try maxminddb.Reader.mmap(allocator, db_path);
     defer db.unmap();
 
-    const m = db.metadata;
-    std.debug.print("{s} v{}.{} ({} nodes, IPv{})\n", .{
-        m.database_type,
-        m.binary_format_major_version,
-        m.binary_format_minor_version,
-        m.node_count,
-        m.ip_version,
-    });
-
     const result = try db.lookup(
         allocator,
         maxminddb.any.Value,
