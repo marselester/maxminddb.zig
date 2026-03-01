@@ -29,7 +29,8 @@ pub fn build(b: *std.Build) void {
         .{ .file = "examples/lookup.zig", .name = "example_lookup" },
         .{ .file = "examples/within.zig", .name = "example_within" },
         .{ .file = "examples/inspect.zig", .name = "example_inspect" },
-        .{ .file = "examples/benchmark.zig", .name = "example_benchmark" },
+        .{ .file = "benchmarks/lookup.zig", .name = "benchmark_lookup" },
+        .{ .file = "benchmarks/inspect.zig", .name = "benchmark_inspect" },
     };
 
     {
@@ -38,7 +39,7 @@ pub fn build(b: *std.Build) void {
                 .name = ex.name,
                 .root_module = b.createModule(.{
                     .target = target,
-                    .optimize = .ReleaseFast,
+                    .optimize = optimize,
                     .root_source_file = b.path(ex.file),
                 }),
             });
