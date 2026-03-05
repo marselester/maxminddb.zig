@@ -48,7 +48,8 @@ pub const Value = union(enum) {
             .int32 => |v| try writer.print("{}", .{v}),
             .uint16, .uint32, .uint64 => |v| try writer.print("{}", .{v}),
             .uint128 => |v| try writer.print("\"{}\"", .{v}),
-            .double, .float => |v| try writer.print("{d}", .{v}),
+            .double => |v| try writer.print("{d}", .{v}),
+            .float => |v| try writer.print("{d}", .{v}),
             .boolean => |v| try writer.writeAll(if (v) "true" else "false"),
             .array => |items| {
                 try writer.writeByte('[');
