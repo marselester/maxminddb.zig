@@ -870,3 +870,65 @@ test "within returns all networks" {
 
     try expectEqual(242, n);
 }
+
+test "within yields record when query prefix is narrower than record network" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-ASN-Test.mmdb",
+    );
+    defer db.unmap();
+
+    // 89.160.20.0/24 is inside the /17 record.
+    // The iterator must still yield it even though the data record is found
+    // before exhausting the 24-bit prefix.
+    const network = try net.Network.parse("89.160.20.0/24");
+    var it = try db.within(allocator, any.Value, network, .{});
+    defer it.deinit();
+
+    const item = (try it.next()) orelse return error.TestExpectedNotNull;
+    try expectEqual(17, item.network.prefix_len);
+
+    var out: [256]u8 = undefined;
+    var w = std.io.Writer.fixed(&out);
+    try item.network.format(&w);
+    try expectEqualStrings("89.160.0.0/17", out[0..w.end]);
+
+    if (try it.next()) |_| {
+        return error.TestExpectedNull;
+    }
+}
+
+test "within yields record when start node is a data pointer" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/MaxMind-DB-no-ipv4-search-tree.mmdb",
+    );
+    defer db.unmap();
+
+    const network = try net.Network.parse("0.0.0.0/0");
+    var it = try db.within(allocator, any.Value, network, .{});
+    defer it.deinit();
+
+    const item = (try it.next()) orelse return error.TestExpectedNotNull;
+    try expectEqual(0, item.network.prefix_len);
+
+    if (try it.next()) |_| {
+        return error.TestExpectedNull;
+    }
+}
+
+test "reject IPv6 on IPv4-only database" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/MaxMind-DB-test-ipv4-32.mmdb",
+    );
+    defer db.unmap();
+
+    const network = try net.Network.parse("::/0");
+    const it = db.within(allocator, any.Value, network, .{});
+    try std.testing.expectError(error.IPv6AddressInIPv4Database, it);
+
+    const ip = try std.net.Address.parseIp("2001:db8::1", 0);
+    const result = db.lookup(allocator, any.Value, ip, .{});
+    try std.testing.expectError(error.IPv6AddressInIPv4Database, result);
+}

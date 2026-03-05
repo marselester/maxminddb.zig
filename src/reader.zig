@@ -11,6 +11,7 @@ pub const ReadError = error{
     CorruptedTree,
     UnknownRecordSize,
     InvalidPrefixLen,
+    IPv6AddressInIPv4Database,
 };
 
 /// Metadata holds the metadata decoded from the MaxMind DB file.
@@ -143,6 +144,10 @@ pub const Reader = struct {
         options: Options,
     ) !?Result(T) {
         const ip = net.IP.init(address);
+        if (ip.bitCount() == 128 and self.metadata.ip_version == 4) {
+            return ReadError.IPv6AddressInIPv4Database;
+        }
+
         const pointer, const prefix_len = try self.findAddressInTree(ip);
         if (pointer == 0) {
             return null;
@@ -172,12 +177,15 @@ pub const Reader = struct {
         network: net.Network,
         options: Options,
     ) !Iterator(T) {
-        const ip_bytes = net.IP.init(network.ip);
         const prefix_len: usize = network.prefix_len;
-        const bit_count: usize = ip_bytes.bitCount();
+        const ip_raw = net.IP.init(network.ip);
+        const bit_count: usize = ip_raw.bitCount();
 
         if (prefix_len > bit_count) {
             return ReadError.InvalidPrefixLen;
+        }
+        if (bit_count == 128 and self.metadata.ip_version == 4) {
+            return ReadError.IPv6AddressInIPv4Database;
         }
 
         var node = self.startNode(bit_count);
@@ -186,28 +194,28 @@ pub const Reader = struct {
         var stack = try std.ArrayList(WithinNode).initCapacity(allocator, bit_count - prefix_len + 1);
         errdefer stack.deinit(allocator);
 
+        const ip_bytes = ip_raw.mask(prefix_len);
         // Traverse down the tree to the level that matches the CIDR mark.
-        var i: usize = 0;
-        while (i < prefix_len) {
-            const bit = ip_bytes.bitAt(i);
-
-            node = try self.readNode(node, bit);
-            // We've hit a dead end before we exhausted our prefix.
-            if (node >= node_count) {
-                break;
+        // Track depth as number of tree edges traversed (becomes the network prefix length).
+        var depth: usize = 0;
+        if (node < node_count) {
+            while (depth < prefix_len) {
+                node = try self.readNode(node, ip_bytes.bitAt(depth));
+                depth += 1;
+                if (node >= node_count) {
+                    break;
+                }
             }
-
-            i += 1;
         }
 
-        // Now anything that's below node in the tree is "within",
-        // start with the node we traversed to as our to be processed stack.
-        // Else the stack will be empty and we'll be returning an iterator that visits nothing.
-        if (node < node_count) {
+        // Push the node to the stack unless it's "not found" (equal to node_count).
+        // Data pointer (> node_count) indicates that record's network contains the query prefix.
+        // Internal node (< node_count) indicates that we need to explore its subtree.
+        if (node != node_count) {
             stack.appendAssumeCapacity(WithinNode{
                 .node = node,
-                .ip_bytes = ip_bytes,
-                .prefix_len = prefix_len,
+                .ip_bytes = ip_bytes.mask(depth),
+                .prefix_len = depth,
             });
         }
 
