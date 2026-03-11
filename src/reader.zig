@@ -159,7 +159,7 @@ pub const Reader = struct {
             arena.allocator(),
             T,
             pointer,
-            options.only orelse &.{},
+            options.only,
         );
 
         return .{
@@ -225,7 +225,7 @@ pub const Reader = struct {
             .stack = stack,
             .allocator = allocator,
             .cache = .{},
-            .field_names = options.only orelse &.{},
+            .field_names = options.only,
         };
     }
 
@@ -239,7 +239,7 @@ pub const Reader = struct {
             .offset = 0,
         };
 
-        return try d.decodeRecord(allocator, Metadata, &.{});
+        return try d.decodeRecord(allocator, Metadata, null);
     }
 
     fn resolveDataPointerAndDecode(
@@ -247,7 +247,7 @@ pub const Reader = struct {
         allocator: std.mem.Allocator,
         T: type,
         pointer: usize,
-        field_names: []const []const u8,
+        field_names: ?[]const []const u8,
     ) !T {
         const record_offset = try self.resolveDataPointer(pointer);
 
@@ -391,7 +391,7 @@ pub fn Iterator(T: type) type {
         node_count: usize,
         stack: std.ArrayList(WithinNode),
         allocator: std.mem.Allocator,
-        field_names: []const []const u8,
+        field_names: ?[]const []const u8,
         cache: Cache,
 
         // Ring buffer cache of recently decoded records.

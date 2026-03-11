@@ -58,15 +58,25 @@ pub const Decoder = struct {
     // This means that strings such as geolite2.City.postal.code are backed by the src's array,
     // so the caller should create a copy of the record when the src is freed (when the database is closed).
     //
+    // When field_names is null, all fields are decoded.
     // When field_names is non-empty, only top-level fields matching the given names are decoded.
+    // When field_names is empty, no fields are decoded (all are skipped).
     pub fn decodeRecord(
         self: *Decoder,
         allocator: std.mem.Allocator,
         T: type,
-        field_names: []const []const u8,
+        field_names: ?[]const []const u8,
     ) !T {
         if (T == any.Value) {
+            if (field_names != null and field_names.?.len == 0) {
+                return .{ .map = &.{} };
+            }
+
             return try self.decodeAnyValue(allocator, field_names);
+        }
+
+        if (field_names != null and field_names.?.len == 0) {
+            return .{};
         }
 
         const data_field = try self.decodeFieldSizeAndType();
@@ -78,7 +88,7 @@ pub const Decoder = struct {
         allocator: std.mem.Allocator,
         T: type,
         data_field: DataField,
-        field_names: []const []const u8,
+        field_names: ?[]const []const u8,
     ) !T {
         if (data_field.type != FieldType.Map) {
             return DecodeError.ExpectedStructType;
@@ -125,12 +135,14 @@ pub const Decoder = struct {
     }
 
     // Decodes a value into the Value union based on the database field type.
-    // When field_names is non-empty, only top-level map entries matching those names are decoded;
-    // the rest are skipped. Nested values are always fully decoded.
+    // When field_names is null, all map entries are decoded.
+    // When field_names is non-empty, only top-level map entries matching those names are decoded.
+    // When field_names is empty, all entries are skipped.
+    // Nested values are always fully decoded.
     fn decodeAnyValue(
         self: *Decoder,
         allocator: std.mem.Allocator,
-        field_names: []const []const u8,
+        field_names: ?[]const []const u8,
     ) !any.Value {
         const field = try self.decodeFieldSizeAndType();
 
@@ -158,7 +170,7 @@ pub const Decoder = struct {
             .Array => {
                 const items = try allocator.alloc(any.Value, field.size);
                 for (items) |*item| {
-                    item.* = try self.decodeAnyValue(allocator, &.{});
+                    item.* = try self.decodeAnyValue(allocator, null);
                 }
 
                 return .{ .array = items };
@@ -176,7 +188,7 @@ pub const Decoder = struct {
 
                     entries[n] = .{
                         .key = key,
-                        .value = try self.decodeAnyValue(allocator, &.{}),
+                        .value = try self.decodeAnyValue(allocator, null),
                     };
                     n += 1;
                 }
@@ -274,7 +286,7 @@ pub const Decoder = struct {
 
                 // Decode Map into a struct, e.g., geolite2.City.continent.
                 // Nested structs are always fully decoded (no field filtering).
-                return try self.decodeStruct(allocator, T, field, &.{});
+                return try self.decodeStruct(allocator, T, field, null);
             },
         };
     }
@@ -482,12 +494,10 @@ pub const Decoder = struct {
     }
 };
 
-fn matchesFilter(field_names: []const []const u8, name: []const u8) bool {
-    if (field_names.len == 0) {
-        return true;
-    }
+fn matchesFilter(field_names: ?[]const []const u8, name: []const u8) bool {
+    const names = field_names orelse return true;
 
-    for (field_names) |n| {
+    for (names) |n| {
         if (std.mem.eql(u8, n, name)) {
             return true;
         }
@@ -509,11 +519,12 @@ pub fn toUsize(bytes: []const u8, prefix: usize) usize {
 test matchesFilter {
     const filter = &.{ "city", "country" };
     const tests = [_]struct {
-        field_names: []const []const u8,
+        field_names: ?[]const []const u8,
         name: []const u8,
         want: bool,
     }{
-        .{ .field_names = &.{}, .name = "anything", .want = true },
+        .{ .field_names = null, .name = "anything", .want = true },
+        .{ .field_names = &.{}, .name = "anything", .want = false },
         .{ .field_names = filter, .name = "city", .want = true },
         .{ .field_names = filter, .name = "country", .want = true },
         .{ .field_names = filter, .name = "continent", .want = false },
