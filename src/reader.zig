@@ -37,7 +37,6 @@ pub const Options = struct {
 };
 
 pub const Reader = struct {
-    mapped_file: ?std.fs.File,
     src: []const u8,
     offset: usize,
     ipv4_start: usize,
@@ -67,7 +66,6 @@ pub const Reader = struct {
         }
 
         var r = Reader{
-            .mapped_file = null,
             .src = src,
             .offset = data_offset,
             .ipv4_start = 0,
@@ -90,10 +88,7 @@ pub const Reader = struct {
 
     // Maps a MaxMind DB file into memory.
     pub fn mmap(allocator: std.mem.Allocator, path: []const u8) !Reader {
-        var f = try std.fs.cwd().openFile(path, .{});
-        errdefer f.close();
-
-        const src = try memorymap.map(f);
+        const src = try memorymap.map(path);
         errdefer memorymap.unmap(src);
 
         var metadata_arena = std.heap.ArenaAllocator.init(allocator);
@@ -111,7 +106,6 @@ pub const Reader = struct {
         }
 
         var r = Reader{
-            .mapped_file = f,
             .src = src,
             .offset = data_offset,
             .ipv4_start = 0,
@@ -129,9 +123,7 @@ pub const Reader = struct {
     // Note, the records still have to be deinited since they might contain arrays or maps.
     pub fn unmap(self: *Reader) void {
         self.metadata_arena.deinit();
-
         memorymap.unmap(self.src);
-        self.mapped_file.?.close();
     }
 
     // Looks up a value by an IP address.
