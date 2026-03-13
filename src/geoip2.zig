@@ -58,9 +58,8 @@ pub const City = struct {
     };
     pub const Location = struct {
         accuracy_radius: u16 = 0,
-        latitude: f64 = 0,
-        longitude: f64 = 0,
-        metro_code: u16 = 0,
+        latitude: ?f64 = null,
+        longitude: ?f64 = null,
         time_zone: []const u8 = "",
     };
     pub const Postal = struct {
@@ -83,7 +82,7 @@ pub const Enterprise = struct {
     country: Self.Country = .{},
     location: Self.Location = .{},
     postal: Self.Postal = .{},
-    registered_country: Self.Country = .{},
+    registered_country: Self.RegisteredCountry = .{},
     represented_country: Self.RepresentedCountry = .{},
     subdivisions: ?collection.Array(Self.Subdivision) = null,
     traits: Self.Traits = .{},
@@ -108,14 +107,19 @@ pub const Enterprise = struct {
     };
     pub const Location = struct {
         accuracy_radius: u16 = 0,
-        latitude: f64 = 0,
-        longitude: f64 = 0,
-        metro_code: u16 = 0,
+        latitude: ?f64 = null,
+        longitude: ?f64 = null,
         time_zone: []const u8 = "",
     };
     pub const Postal = struct {
         code: []const u8 = "",
         confidence: u16 = 0,
+    };
+    pub const RegisteredCountry = struct {
+        geoname_id: u32 = 0,
+        is_in_european_union: bool = false,
+        iso_code: []const u8 = "",
+        names: ?collection.Map([]const u8) = null,
     };
     pub const RepresentedCountry = struct {
         geoname_id: u32 = 0,
@@ -136,12 +140,10 @@ pub const Enterprise = struct {
         connection_type: []const u8 = "",
         domain: []const u8 = "",
         is_anycast: bool = false,
-        is_legitimate_proxy: bool = false,
         isp: []const u8 = "",
         mobile_country_code: []const u8 = "",
         mobile_network_code: []const u8 = "",
         organization: []const u8 = "",
-        static_ip_score: f64 = 0,
         user_type: []const u8 = "",
     };
 };

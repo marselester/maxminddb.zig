@@ -217,23 +217,26 @@ pub const Decoder = struct {
 
         return switch (T) {
             // String or Bytes
-            []const u8 => if (field.type == FieldType.String or field.type == FieldType.Bytes) self.decodeBytes(field.size) else DecodeError.ExpectedStringOrBytes,
+            []const u8, ?[]const u8 => if (field.type == FieldType.String or field.type == FieldType.Bytes)
+                self.decodeBytes(field.size)
+            else
+                DecodeError.ExpectedStringOrBytes,
             // Double
-            f64 => if (field.type == FieldType.Double) try self.decodeDouble(field.size) else DecodeError.ExpectedDouble,
+            f64, ?f64 => if (field.type == FieldType.Double) try self.decodeDouble(field.size) else DecodeError.ExpectedDouble,
             // Uint16
-            u16 => if (field.type == FieldType.Uint16) try self.decodeInteger(u16, field.size) else DecodeError.ExpectedUint16,
+            u16, ?u16 => if (field.type == FieldType.Uint16) try self.decodeInteger(u16, field.size) else DecodeError.ExpectedUint16,
             // Uint32
-            u32 => if (field.type == FieldType.Uint32) try self.decodeInteger(u32, field.size) else DecodeError.ExpectedUint32,
+            u32, ?u32 => if (field.type == FieldType.Uint32) try self.decodeInteger(u32, field.size) else DecodeError.ExpectedUint32,
             // Int32
-            i32 => if (field.type == FieldType.Int32) try self.decodeInteger(i32, field.size) else DecodeError.ExpectedInt32,
+            i32, ?i32 => if (field.type == FieldType.Int32) try self.decodeInteger(i32, field.size) else DecodeError.ExpectedInt32,
             // Uint64
-            u64 => if (field.type == FieldType.Uint64) try self.decodeInteger(u64, field.size) else DecodeError.ExpectedUint64,
+            u64, ?u64 => if (field.type == FieldType.Uint64) try self.decodeInteger(u64, field.size) else DecodeError.ExpectedUint64,
             // Uint128
-            u128 => if (field.type == FieldType.Uint128) try self.decodeInteger(u128, field.size) else DecodeError.ExpectedUint128,
+            u128, ?u128 => if (field.type == FieldType.Uint128) try self.decodeInteger(u128, field.size) else DecodeError.ExpectedUint128,
             // Bool
-            bool => if (field.type == FieldType.Bool) try self.decodeBool(field.size) else DecodeError.ExpectedBool,
+            bool, ?bool => if (field.type == FieldType.Bool) try self.decodeBool(field.size) else DecodeError.ExpectedBool,
             // Float
-            f32 => if (field.type == FieldType.Float) try self.decodeFloat(field.size) else DecodeError.ExpectedFloat,
+            f32, ?f32 => if (field.type == FieldType.Float) try self.decodeFloat(field.size) else DecodeError.ExpectedFloat,
             else => {
                 // We support Structs or Optional Structs only to safely decode arrays and maps.
                 comptime var DecodedType: type = T;

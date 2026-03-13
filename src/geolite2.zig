@@ -51,9 +51,8 @@ pub const City = struct {
     };
     pub const Location = struct {
         accuracy_radius: u16 = 0,
-        latitude: f64 = 0,
-        longitude: f64 = 0,
-        metro_code: u16 = 0,
+        latitude: ?f64 = null,
+        longitude: ?f64 = null,
         time_zone: []const u8 = "",
     };
     pub const Postal = struct {
