@@ -15,7 +15,8 @@ pub const Result = reader.Result;
 pub const Metadata = reader.Metadata;
 pub const Iterator = reader.Iterator;
 pub const Network = net.Network;
-pub const Options = reader.Options;
+pub const LookupOptions = reader.LookupOptions;
+pub const WithinOptions = reader.WithinOptions;
 pub const Map = collection.Map;
 pub const Array = collection.Array;
 
@@ -928,4 +929,36 @@ test "reject IPv6 on IPv4-only database" {
     const ip = try std.net.Address.parseIp("2001:db8::1", 0);
     const result = db.lookup(allocator, any.Value, ip, .{});
     try std.testing.expectError(error.IPv6AddressInIPv4Database, result);
+}
+
+test "within skips empty records" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb",
+    );
+    defer db.unmap();
+
+    // All records including empty.
+    {
+        var it = try db.within(allocator, geoip2.AnonymousIP, net.Network.all_ipv6, .{
+            .include_empty_values = true,
+        });
+        defer it.deinit();
+
+        var n: usize = 0;
+        while (try it.next()) |_| : (n += 1) {}
+        try std.testing.expectEqual(571, n);
+    }
+
+    // Only non-empty records.
+    {
+        var it = try db.within(allocator, geoip2.AnonymousIP, net.Network.all_ipv6, .{
+            .include_empty_values = false,
+        });
+        defer it.deinit();
+
+        var n: usize = 0;
+        while (try it.next()) |_| : (n += 1) {}
+        try std.testing.expectEqual(8, n);
+    }
 }

@@ -438,6 +438,17 @@ pub const Decoder = struct {
         };
     }
 
+    // Checks whether the value at the current offset is an empty map, following any pointers.
+    pub fn isEmptyMap(self: *Decoder) !bool {
+        var field = try self.decodeFieldSizeAndType();
+        while (field.type == .Pointer) {
+            self.offset = self.decodePointer(field.size);
+            field = try self.decodeFieldSizeAndType();
+        }
+
+        return field.type == .Map and field.size == 0;
+    }
+
     // Decodes a control byte that provides information about the field's data type and payload size,
     // see https://maxmind.github.io/MaxMind-DB/#data-field-format.
     fn decodeFieldSizeAndType(self: *Decoder) !DataField {

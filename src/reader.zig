@@ -32,8 +32,13 @@ pub const Metadata = struct {
 
 const data_section_separator_size = 16;
 
-pub const Options = struct {
+pub const LookupOptions = struct {
     only: ?[]const []const u8 = null,
+};
+
+pub const WithinOptions = struct {
+    only: ?[]const []const u8 = null,
+    include_empty_values: bool = true,
 };
 
 pub const Reader = struct {
@@ -133,7 +138,7 @@ pub const Reader = struct {
         allocator: std.mem.Allocator,
         T: type,
         address: std.net.Address,
-        options: Options,
+        options: LookupOptions,
     ) !?Result(T) {
         const ip = net.IP.init(address);
         if (ip.bitCount() == 128 and self.metadata.ip_version == 4) {
@@ -167,7 +172,7 @@ pub const Reader = struct {
         allocator: std.mem.Allocator,
         T: type,
         network: net.Network,
-        options: Options,
+        options: WithinOptions,
     ) !Iterator(T) {
         const prefix_len: usize = network.prefix_len;
         const ip_raw = net.IP.init(network.ip);
@@ -218,6 +223,7 @@ pub const Reader = struct {
             .allocator = allocator,
             .cache = .{},
             .field_names = options.only,
+            .include_empty_values = options.include_empty_values,
         };
     }
 
@@ -263,6 +269,17 @@ pub const Reader = struct {
         }
 
         return resolved;
+    }
+
+    // Checks if the record at the given data pointer is an empty map (zero entries).
+    fn isEmptyRecord(self: *Reader, pointer: usize) !bool {
+        const record_offset = try self.resolveDataPointer(pointer);
+        var d = decoder.Decoder{
+            .src = self.src[self.offset..],
+            .offset = record_offset,
+        };
+
+        return d.isEmptyMap();
     }
 
     fn findAddressInTree(self: *Reader, ip: net.IP) !struct { usize, usize } {
@@ -384,6 +401,7 @@ pub fn Iterator(T: type) type {
         stack: std.ArrayList(WithinNode),
         allocator: std.mem.Allocator,
         field_names: ?[]const []const u8,
+        include_empty_values: bool,
         cache: Cache,
 
         // Ring buffer cache of recently decoded records.
@@ -486,6 +504,12 @@ pub fn Iterator(T: type) type {
                             .network = ip_net,
                             .value = cached_value,
                         };
+                    }
+
+                    // Skip empty records (map with zero entries) unless requested.
+                    // Checked after cache lookup because skipped records are never decoded or cached.
+                    if (!self.include_empty_values and try reader.isEmptyRecord(current.node)) {
+                        continue;
                     }
 
                     var entry_arena = std.heap.ArenaAllocator.init(self.allocator);
