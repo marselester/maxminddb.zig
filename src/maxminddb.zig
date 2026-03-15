@@ -15,6 +15,7 @@ pub const Result = reader.Result;
 pub const Metadata = reader.Metadata;
 pub const Iterator = reader.Iterator;
 pub const Network = net.Network;
+pub const Options = reader.Options;
 pub const LookupOptions = reader.LookupOptions;
 pub const WithinOptions = reader.WithinOptions;
 pub const Map = collection.Map;
@@ -138,6 +139,7 @@ test "GeoLite2 Country" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoLite2-Country-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -191,6 +193,7 @@ test "GeoLite2 City" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -262,6 +265,7 @@ test "GeoLite2 ASN" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoLite2-ASN-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -286,6 +290,7 @@ test "GeoIP2 Country" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-Country-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -341,6 +346,7 @@ test "GeoIP2 Country RepresentedCountry" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-Country-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -366,6 +372,7 @@ test "GeoIP2 City" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-City-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -450,6 +457,7 @@ test "GeoIP2 Enterprise" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-Enterprise-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -549,6 +557,7 @@ test "GeoIP2 ISP" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-ISP-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -573,6 +582,7 @@ test "GeoIP2 Connection-Type" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-Connection-Type-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -592,6 +602,7 @@ test "GeoIP2 Anonymous-IP" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -616,6 +627,7 @@ test "GeoIP Anonymous-Plus" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP-Anonymous-Plus-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -639,6 +651,7 @@ test "GeoIP2 DensityIncome" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-DensityIncome-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -659,6 +672,7 @@ test "GeoIP2 Domain" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-Domain-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -678,6 +692,7 @@ test "GeoIP2 IP-Risk" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-IP-Risk-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -715,6 +730,7 @@ test "GeoIP2 Static-IP-Score" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-Static-IP-Score-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -734,6 +750,7 @@ test "GeoIP2 User-Count" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-User-Count-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -754,6 +771,7 @@ test "lookup with field name filtering" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -783,6 +801,7 @@ test "lookup with custom record" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -807,6 +826,7 @@ test "lookup with any.Value" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -829,6 +849,7 @@ test "lookup with any.Value and field name filtering" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -857,6 +878,7 @@ test "within returns all networks" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -873,6 +895,7 @@ test "within yields record when query prefix is narrower than record network" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoLite2-ASN-Test.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -900,6 +923,7 @@ test "within yields record when start node is a data pointer" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/MaxMind-DB-no-ipv4-search-tree.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -919,6 +943,7 @@ test "reject IPv6 on IPv4-only database" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/MaxMind-DB-test-ipv4-32.mmdb",
+        .{},
     );
     defer db.close();
 
@@ -935,6 +960,7 @@ test "within skips empty records" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb",
+        .{},
     );
     defer db.close();
 

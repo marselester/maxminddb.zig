@@ -11,6 +11,7 @@ pub const ReadError = error{
     CorruptedTree,
     UnknownRecordSize,
     InvalidPrefixLen,
+    IndexAlreadyBuilt,
     IPv6AddressInIPv4Database,
 };
 
@@ -32,6 +33,31 @@ pub const Metadata = struct {
 
 const data_section_separator_size = 16;
 
+// Maximum db size for Reader.open().
+// 64-bit: 20GB covers ~2.3B nodes (record_size=32) with ~2GB data section.
+// 32-bit: 2GB matches the user-space address limit.
+const max_db_size: usize = if (@sizeOf(usize) >= 8)
+    20 * 1024 * 1024 * 1024
+else
+    2 * 1024 * 1024 * 1024;
+
+pub const Options = struct {
+    /// Builds an index of the first N bits of IPv4 addresses to speed up lookups,
+    /// but not the within() iterator.
+    ///
+    /// It adds a one-time build cost of ~1-4ms and uses memory proportional to 2^N.
+    /// The first open is slower (~10-120ms) because page faults load the tree from disk.
+    /// Best suited for long-lived Readers with many lookups.
+    ///
+    /// Sparse databases such as Anonymous-IP or ISP benefit more (~70%-140%)
+    /// because tree traversal dominates whereas dense databases (City, Enterprise)
+    /// benefit less (~12%-18%) because record decoding is the bottleneck.
+    ///
+    /// The recommended value is 16 (~320KB, fits L2 cache), or 12 (~20KB) for constrained devices.
+    /// The valid range is between 0 and 24 where 0 disables the index.
+    ipv4_index_first_n_bits: u8 = 0,
+};
+
 pub const LookupOptions = struct {
     only: ?[]const []const u8 = null,
 };
@@ -42,22 +68,31 @@ pub const WithinOptions = struct {
 };
 
 pub const Reader = struct {
+    metadata: Metadata,
     src: []const u8,
     offset: usize,
     ipv4_start: usize,
-    // ipv4_index contains a mix of node IDs and data offsets
+    // ipv4_index is a flat array of tree node IDs and data offsets
     // for fast lookup of IPv4 addresses by their first N bits.
-    // Instead of fetching the start node, then its right child, and so on,
-    // these paths are flattened into ipv4_index array for direct access with Eytzinger layout.
-    ipv4_index_first_n_bits: usize,
-    ipv4_index: ?[]usize,
-    metadata: Metadata,
-
+    // Instead of traversing the tree bit by bit from the root,
+    // the first N levels are pre-computed into a direct-access array.
+    ipv4_index_first_n_bits: u8,
+    ipv4_index: ?[]u32,
+    // ipv4_index_prefix_len stores the prefix length at which
+    // each terminal was reached during the index construction.
+    // This lets us return the correct prefix length
+    // without re-traversing the tree for terminal nodes in the index.
+    ipv4_index_prefix_len: ?[]u8,
     is_mapped: bool,
     arena: *std.heap.ArenaAllocator,
 
-    fn init(arena: *std.heap.ArenaAllocator, src: []const u8) !Reader {
+    fn init(arena: *std.heap.ArenaAllocator, src: []const u8, options: Options) !Reader {
         const metadata = try decodeMetadata(arena.allocator(), src);
+
+        switch (metadata.record_size) {
+            24, 28, 32 => {},
+            else => return ReadError.UnknownRecordSize,
+        }
 
         const search_tree_size = try std.math.mul(
             usize,
@@ -70,23 +105,28 @@ pub const Reader = struct {
         }
 
         var r = Reader{
+            .metadata = metadata,
             .src = src,
             .offset = data_offset,
             .ipv4_start = 0,
-            .ipv4_index_first_n_bits = 0,
+            .ipv4_index_first_n_bits = options.ipv4_index_first_n_bits,
             .ipv4_index = null,
-            .metadata = metadata,
+            .ipv4_index_prefix_len = null,
             .is_mapped = false,
             .arena = arena,
         };
 
-        try r.setIPv4Start();
+        r.setIPv4Start();
+
+        if (r.ipv4_index_first_n_bits > 0) {
+            try r.buildIPv4Index();
+        }
 
         return r;
     }
 
     /// Loads a MaxMind DB file into memory.
-    pub fn open(allocator: std.mem.Allocator, path: []const u8, max_db_size: usize) !Reader {
+    pub fn open(allocator: std.mem.Allocator, path: []const u8, options: Options) !Reader {
         var f = try std.fs.cwd().openFile(path, .{});
         defer f.close();
 
@@ -99,11 +139,11 @@ pub const Reader = struct {
 
         const src = try f.readToEndAlloc(arena.allocator(), max_db_size);
 
-        return try init(arena, src);
+        return try init(arena, src, options);
     }
 
     /// Maps a MaxMind DB file into memory.
-    pub fn mmap(allocator: std.mem.Allocator, path: []const u8) !Reader {
+    pub fn mmap(allocator: std.mem.Allocator, path: []const u8, options: Options) !Reader {
         const src = try memorymap.map(path);
         errdefer memorymap.unmap(src);
 
@@ -114,7 +154,7 @@ pub const Reader = struct {
         }
         arena.* = std.heap.ArenaAllocator.init(allocator);
 
-        var r = try init(arena, src);
+        var r = try init(arena, src, options);
         r.is_mapped = true;
 
         return r;
@@ -208,7 +248,7 @@ pub const Reader = struct {
         var depth: usize = 0;
         if (node < node_count) {
             while (depth < prefix_len) {
-                node = try self.readNode(node, ip_bytes.bitAt(depth));
+                node = self.readNode(node, ip_bytes.bitAt(depth));
                 depth += 1;
                 if (node >= node_count) {
                     break;
@@ -251,59 +291,64 @@ pub const Reader = struct {
         return try d.decodeRecord(allocator, Metadata, null);
     }
 
-    // Builds an IPv4 index that could yield almost 30% faster lookups for IPv4 addresses,
-    // but increases memory usage, e.g., if we index first 16 bits, the index size is ~1 MB.
-    pub fn buildIPv4Index(self: *Reader, index_first_n_bits: usize) !void {
-        self.ipv4_index_first_n_bits = index_first_n_bits;
+    fn buildIPv4Index(self: *Reader) !void {
+        if (self.ipv4_index_first_n_bits > 24) {
+            return ReadError.InvalidPrefixLen;
+        }
+        if (self.ipv4_index != null) {
+            return ReadError.IndexAlreadyBuilt;
+        }
 
-        self.ipv4_index = try self.arena.allocator().alloc(
-            usize,
-            std.math.shl(usize, 1, index_first_n_bits + 1),
-        );
+        const index_size = std.math.shl(usize, 1, self.ipv4_index_first_n_bits);
+        self.ipv4_index = try self.arena.allocator().alloc(u32, index_size);
         errdefer self.ipv4_index = null;
 
-        try self.populateIndex(self.ipv4_start, 1, 0);
+        self.ipv4_index_prefix_len = try self.arena.allocator().alloc(u8, index_size);
+        errdefer self.ipv4_index_prefix_len = null;
+
+        self.populateIndex(self.ipv4_start, 0, index_size, 0);
     }
 
+    // Recursively traverses the first N levels of the search tree and fills the flat index array.
+    // Each index slot corresponds to an N-bit prefix, for example,
+    // slot 0000 covers all IPs starting with 0000.
+    //
+    // The range [start, start+count) tracks which slots belong to the current subtree.
+    // At each level we split in half: left child (0-bit) gets the lower half,
+    // right child (1-bit) gets the upper half.
+    //
+    // This works because the array is indexed by the N-bit prefix as a binary number:
+    // prefixes starting with 0 occupy the lower half of any range,
+    // prefixes starting with 1 occupy the upper half.
+    //
+    // When a node is terminal (data pointer or not-found) before depth N,
+    // we fill all remaining slots in the range with that node because
+    // every IP prefix in that range resolves to the same record.
     fn populateIndex(
         self: *Reader,
         node: usize,
-        index_pos: usize,
+        start: usize,
+        count: usize,
         bit_depth: usize,
-    ) !void {
-        // If we've reached the max bit index depth, store the node.
-        if (bit_depth == self.ipv4_index_first_n_bits) {
-            self.ipv4_index.?[index_pos] = node;
-            return;
-        }
+    ) void {
+        // If the node is terminal or we've reached the max index depth,
+        // fill the range with this node.
+        if (count == 1 or node >= self.metadata.node_count) {
+            const node_u32: u32 = @intCast(node);
+            const prefix_len: u8 = @intCast(bit_depth);
 
-        // If the node is terminal (it's a data pointer or empty),
-        // fill all descendants at the max bit index depth with that node ID.
-        if (node >= self.metadata.node_count) {
-            const start: usize = std.math.shl(
-                usize,
-                index_pos,
-                self.ipv4_index_first_n_bits - bit_depth,
-            );
-            const count: usize = std.math.shl(
-                usize,
-                1,
-                self.ipv4_index_first_n_bits - bit_depth,
-            );
-
-            var i: usize = 0;
-            while (i < count) : (i += 1) {
-                self.ipv4_index.?[start + i] = node;
-            }
+            @memset(self.ipv4_index.?[start..][0..count], node_u32);
+            @memset(self.ipv4_index_prefix_len.?[start..][0..count], prefix_len);
 
             return;
         }
 
-        const left_node = try self.readNode(node, 0);
-        try self.populateIndex(left_node, index_pos * 2, bit_depth + 1);
+        const half = count / 2;
+        const left_node = self.readNode(node, 0);
+        self.populateIndex(left_node, start, half, bit_depth + 1);
 
-        const right_node = try self.readNode(node, 1);
-        try self.populateIndex(right_node, index_pos * 2 + 1, bit_depth + 1);
+        const right_node = self.readNode(node, 1);
+        self.populateIndex(right_node, start + half, half, bit_depth + 1);
     }
 
     fn resolveDataPointerAndDecode(
@@ -348,25 +393,23 @@ pub const Reader = struct {
         return d.isEmptyMap();
     }
 
-    // Uses the Eytzinger index for fast IPv4 lookups.
+    // Uses the IPv4 index for fast lookups.
     // The index covers the first N bits of the IPv4 address, allowing us to
     // skip directly to the node at depth N instead of traversing bit by bit.
     fn findAddressInTreeWithIndex(self: *Reader, ip: net.IP) !struct { usize, usize } {
         const ip_int = std.mem.readInt(u32, &ip.v4, .big);
-        const first_n_bits = std.math.shr(
-            usize,
-            ip_int,
-            32 - self.ipv4_index_first_n_bits,
-        );
-        const index_pos = std.math.shl(usize, 1, self.ipv4_index_first_n_bits) + first_n_bits;
+        const index_pos = std.math.shr(usize, ip_int, 32 - self.ipv4_index_first_n_bits);
 
-        var node = self.ipv4_index.?[index_pos];
+        const node: usize = self.ipv4_index.?[index_pos];
 
-        // If we hit a terminal at or before bit N of IPv4, fall back to regular
-        // traversal to get the accurate prefix length.
+        // If we hit a terminal at or before bit N of IPv4, return the prefix length
+        // that was stored during index construction.
         if (node >= self.metadata.node_count) {
-            node = self.ipv4_start;
-            return try self.findAddressInTree(ip, node, 0);
+            const prefix_len: usize = self.ipv4_index_prefix_len.?[index_pos];
+            if (node == self.metadata.node_count) {
+                return .{ 0, prefix_len };
+            }
+            return .{ node, prefix_len };
         }
 
         // Continue traversal from where the index ends (bit N of IPv4 portion).
@@ -390,7 +433,7 @@ pub const Reader = struct {
                 break;
             }
 
-            node = try self.readNode(node, ip.bitAt(i));
+            node = self.readNode(node, ip.bitAt(i));
         }
 
         if (node == node_count) {
@@ -408,7 +451,7 @@ pub const Reader = struct {
         return if (length == 128) 0 else self.ipv4_start;
     }
 
-    fn setIPv4Start(self: *Reader) !void {
+    fn setIPv4Start(self: *Reader) void {
         if (self.metadata.ip_version != 6) {
             return;
         }
@@ -420,13 +463,13 @@ pub const Reader = struct {
         var node: usize = 0;
         var i: usize = 0;
         while (i < 96 and node < node_count) : (i += 1) {
-            node = try self.readNode(node, 0);
+            node = self.readNode(node, 0);
         }
 
         self.ipv4_start = node;
     }
 
-    fn readNode(self: *Reader, node_number: usize, index: usize) !usize {
+    fn readNode(self: *Reader, node_number: usize, index: usize) usize {
         const src = self.src;
         const base_offset: usize = node_number * self.metadata.record_size / 4;
 
@@ -450,7 +493,7 @@ pub const Reader = struct {
                 const offset = base_offset + index * 4;
                 return decoder.toUsize(src[offset .. offset + 4], 0);
             },
-            else => ReadError.UnknownRecordSize,
+            else => unreachable,
         };
     }
 
@@ -624,7 +667,7 @@ pub fn Iterator(T: type) type {
                     };
                 } else if (current.node < self.node_count) {
                     // In order traversal of the children on the right (1-bit).
-                    var node = try reader.readNode(current.node, 1);
+                    var node = reader.readNode(current.node, 1);
                     var right_ip_bytes = current.ip_bytes;
 
                     if (current.prefix_len < bit_count) {
@@ -642,7 +685,7 @@ pub fn Iterator(T: type) type {
                     });
 
                     // In order traversal of the children on the left (0-bit).
-                    node = try reader.readNode(current.node, 0);
+                    node = reader.readNode(current.node, 0);
                     self.stack.appendAssumeCapacity(WithinNode{
                         .node = node,
                         .ip_bytes = current.ip_bytes,

@@ -2,15 +2,13 @@ const std = @import("std");
 const maxminddb = @import("maxminddb");
 
 const db_path = "test-data/test-data/GeoIP2-City-Test.mmdb";
-// We expect a DB file not larger than 1 GB.
-const max_db_size: usize = 1024 * 1024 * 1024;
 
 pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     const allocator = gpa.allocator();
     defer _ = gpa.detectLeaks();
 
-    var db = try maxminddb.Reader.open(allocator, db_path, max_db_size);
+    var db = try maxminddb.Reader.open(allocator, db_path, .{});
     defer db.close();
 
     // Note, for better performance use arena allocator and reset it after calling lookup().
