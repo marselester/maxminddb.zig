@@ -58,10 +58,13 @@ pub const Options = struct {
     ipv4_index_first_n_bits: u8 = 0,
 };
 
-pub const LookupOptions = struct {
-    only: ?[]const []const u8 = null,
-    include_empty_values: bool = false,
-};
+pub fn LookupOptions(comptime T: type) type {
+    return struct {
+        only: ?[]const []const u8 = null,
+        include_empty_values: bool = false,
+        cache: ?*Cache(T) = null,
+    };
+}
 
 pub const WithinOptions = struct {
     only: ?[]const []const u8 = null,
@@ -175,16 +178,28 @@ pub const Reader = struct {
     }
 
     /// Looks up a value by an IP address.
-    /// The returned Result owns an arena with all decoded allocations.
+    ///
+    /// Without a cache the returned Result owns an arena, so you should call deinit() to free it.
+    /// Otherwise the cache owns the memory, free it with cache.deinit().
     pub fn lookup(
         self: *Reader,
         allocator: std.mem.Allocator,
         T: type,
         address: std.net.Address,
-        options: LookupOptions,
+        options: LookupOptions(T),
     ) !?Result(T) {
         const pointer, const network = try self.findAddress(address) orelse return null;
 
+        if (options.cache) |cache| {
+            if (cache.get(pointer)) |v| {
+                return .{
+                    .network = network,
+                    .value = v,
+                    .arena = null,
+                };
+            }
+        }
+
         if (!options.include_empty_values and try self.isEmptyRecord(pointer)) {
             return null;
         }
@@ -199,62 +214,24 @@ pub const Reader = struct {
             options.only,
         );
 
-        return .{
-            .network = network,
-            .value = value,
-            .arena = arena,
-        };
-    }
+        if (options.cache) |cache| {
+            cache.insert(.{
+                .pointer = pointer,
+                .value = value,
+                .arena = arena,
+            });
 
-    /// Looks up a value by an IP address using a cache.
-    /// Many IPs within the same network share the same record,
-    /// so the cache skips decoding on repeated hits.
-    ///
-    /// The caller owns the cache and each returned value is valid until its
-    /// cache entry is evicted.
-    pub fn lookupCached(
-        self: *Reader,
-        allocator: std.mem.Allocator,
-        T: type,
-        address: std.net.Address,
-        cache: *Cache(T),
-        options: LookupOptions,
-    ) !?struct {
-        network: net.Network,
-        value: T,
-    } {
-        const pointer, const network = try self.findAddress(address) orelse return null;
-
-        if (cache.get(pointer)) |v| {
             return .{
                 .network = network,
-                .value = v,
+                .value = value,
+                .arena = null,
             };
         }
 
-        if (!options.include_empty_values and try self.isEmptyRecord(pointer)) {
-            return null;
-        }
-
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer arena.deinit();
-
-        const value = try self.resolveDataPointerAndDecode(
-            arena.allocator(),
-            T,
-            pointer,
-            options.only,
-        );
-
-        cache.insert(.{
-            .pointer = pointer,
-            .value = value,
-            .arena = arena,
-        });
-
         return .{
             .network = network,
             .value = value,
+            .arena = arena,
         };
     }
 
@@ -628,15 +605,17 @@ pub fn Cache(comptime T: type) type {
 }
 
 /// Result wraps a decoded value with an arena that owns all its allocations.
-/// Use deinit() to free the result's memory, or skip it when using an outer arena.
+/// When a cache is used, the cache owns the memory and arena is null.
 pub fn Result(comptime T: type) type {
     return struct {
         network: net.Network,
         value: T,
-        arena: std.heap.ArenaAllocator,
+        arena: ?std.heap.ArenaAllocator,
 
         pub fn deinit(self: @This()) void {
-            self.arena.deinit();
+            if (self.arena) |a| {
+                a.deinit();
+            }
         }
     };
 }
