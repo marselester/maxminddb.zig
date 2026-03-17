@@ -87,14 +87,23 @@ if (result) |r| {
 }
 ```
 
+Use a `Cache` to skip decoding when different IPs resolve to the same record.
+
+```zig
+var cache: maxminddb.Cache(maxminddb.geolite2.City) = .{};
+defer cache.deinit();
+
+const city = try db.lookup(allocator, maxminddb.geolite2.City, ip, .{ .cache = &cache });
+```
+
 Here are reference results on Apple M2 Pro (1M random IPv4 lookups against GeoLite2-City
 with `ipv4_index_first_n_bits = 16`):
 
-| Benchmark       | All fields | Filtered (city) |
-|---              |---         |---              |
-| `geolite2.City` | ~1,284,000 | ~1,348,000      |
-| `MyCity`        | ~1,383,000 | —               |
-| `any.Value`     | ~1,254,000 | ~1,349,000      |
+| Type             | Default    | `.only`    | `Cache`    |
+|---               |---         |---         |---         |
+| `geolite2.City`  | ~1,284,000 | ~1,348,000 | ~1,474,000 |
+| `MyCity`         | ~1,383,000 |            |            |
+| `any.Value`      | ~1,254,000 | ~1,349,000 |            |
 
 <details>
 
@@ -134,6 +143,30 @@ Lookups Per Second (avg):1357781.4722981465
 Lookups Per Second (avg):1356498.714039219
 Lookups Per Second (avg):1346452.11429767
 Lookups Per Second (avg):1315870.3443053183
+```
+
+</details>
+
+<details>
+
+<summary>geolite2.City with Cache</summary>
+
+```sh
+$ for i in $(seq 1 10); do
+    zig build benchmark_lookup_cache -Doptimize=ReleaseFast -- GeoLite2-City.mmdb 1000000 \
+      2>&1 | grep 'Lookups Per Second'
+  done
+
+Lookups Per Second (avg):1493822.3908664712
+Lookups Per Second (avg):1503051.0049070602
+Lookups Per Second (avg):1499514.437731375
+Lookups Per Second (avg):1491749.9700251492
+Lookups Per Second (avg):1449924.9391983037
+Lookups Per Second (avg):1396100.6211600688
+Lookups Per Second (avg):1465750.9875955326
+Lookups Per Second (avg):1515611.9396877384
+Lookups Per Second (avg):1485235.6423035355
+Lookups Per Second (avg):1439334.222943596
 ```
 
 </details>
@@ -200,6 +233,83 @@ Lookups Per Second (avg):1351386.2025057953
 Lookups Per Second (avg):1360068.193819238
 Lookups Per Second (avg):1342324.820976454
 Lookups Per Second (avg):1315986.2950186788
+```
+
+</details>
+
+Use `within()` to iterate over all networks in the database.
+A `Cache` avoids re-decoding networks that share the same record.
+
+```zig
+var cache: maxminddb.Cache(maxminddb.any.Value) = .{};
+defer cache.deinit();
+
+var it = try db.within(
+    allocator,
+    maxminddb.any.Value,
+    maxminddb.Network.all_ipv6,
+    .{ .cache = &cache },
+);
+defer it.deinit();
+
+while (try it.next()) |item| {
+    std.debug.print("{f} {f}\n", .{item.network, item.value});
+}
+```
+
+Without a cache each result owns its memory and must be freed with `item.deinit()`.
+
+Here are reference results on Apple M2 Pro (full GeoLite2-City scan using `any.Value`):
+
+| Mode      | Records/sec |
+|---        |---          |
+| Default   | ~1,235,000  |
+| `Cache`   | ~2,900,000  |
+
+<details>
+
+<summary>no cache (any.Value)</summary>
+
+```sh
+$ for i in $(seq 1 10); do
+    zig build benchmark_within -Doptimize=ReleaseFast -- GeoLite2-City.mmdb \
+      2>&1 | grep 'Records Per Second'
+  done
+
+Records Per Second: 1216758.945145436
+Records Per Second: 1238440.9772222256
+Records Per Second: 1234710.6362391203
+Records Per Second: 1229527.4688849829
+Records Per Second: 1243478.3908140333
+Records Per Second: 1226863.3718734735
+Records Per Second: 1240073.3248202254
+Records Per Second: 1247541.1528026997
+Records Per Second: 1230510.441029532
+Records Per Second: 1246311.587919839
+```
+
+</details>
+
+<details>
+
+<summary>cache (any.Value)</summary>
+
+```sh
+$ for i in $(seq 1 10); do
+    zig build benchmark_within_cache -Doptimize=ReleaseFast -- GeoLite2-City.mmdb \
+      2>&1 | grep 'Records Per Second'
+  done
+
+Records Per Second: 2847560.3756875996
+Records Per Second: 2925388.867798729
+Records Per Second: 2919203.9046571665
+Records Per Second: 2814410.555872645
+Records Per Second: 2933972.04386147
+Records Per Second: 2900700.06160036
+Records Per Second: 2922279.338699886
+Records Per Second: 2862525.847598088
+Records Per Second: 2916760.542913819
+Records Per Second: 2908245.98918392
 ```
 
 </details>

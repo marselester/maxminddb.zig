@@ -14,7 +14,7 @@ pub const Reader = reader.Reader;
 pub const Result = reader.Result;
 pub const Metadata = reader.Metadata;
 pub const Iterator = reader.Iterator;
-pub const LookupCache = reader.Cache;
+pub const Cache = reader.Cache;
 pub const Options = reader.Options;
 pub const LookupOptions = reader.LookupOptions;
 pub const WithinOptions = reader.WithinOptions;
@@ -887,7 +887,9 @@ test "within returns all networks" {
     defer it.deinit();
 
     var n: usize = 0;
-    while (try it.next()) |_| : (n += 1) {}
+    while (try it.next()) |item| : (n += 1) {
+        item.deinit();
+    }
 
     try expectEqual(242, n);
 }
@@ -908,6 +910,7 @@ test "within yields record when query prefix is narrower than record network" {
     defer it.deinit();
 
     const item = (try it.next()) orelse return error.TestExpectedNotNull;
+    defer item.deinit();
     try expectEqual(17, item.network.prefix_len);
 
     var out: [256]u8 = undefined;
@@ -915,7 +918,8 @@ test "within yields record when query prefix is narrower than record network" {
     try item.network.format(&w);
     try expectEqualStrings("89.160.0.0/17", out[0..w.end]);
 
-    if (try it.next()) |_| {
+    if (try it.next()) |i| {
+        i.deinit();
         return error.TestExpectedNull;
     }
 }
@@ -933,9 +937,11 @@ test "within yields record when start node is a data pointer" {
     defer it.deinit();
 
     const item = (try it.next()) orelse return error.TestExpectedNotNull;
+    defer item.deinit();
     try expectEqual(0, item.network.prefix_len);
 
-    if (try it.next()) |_| {
+    if (try it.next()) |i| {
+        i.deinit();
         return error.TestExpectedNull;
     }
 }
@@ -973,7 +979,9 @@ test "within skips empty records" {
         defer it.deinit();
 
         var n: usize = 0;
-        while (try it.next()) |_| : (n += 1) {}
+        while (try it.next()) |item| : (n += 1) {
+            item.deinit();
+        }
         try std.testing.expectEqual(571, n);
     }
 
@@ -985,7 +993,9 @@ test "within skips empty records" {
         defer it.deinit();
 
         var n: usize = 0;
-        while (try it.next()) |_| : (n += 1) {}
+        while (try it.next()) |item| : (n += 1) {
+            item.deinit();
+        }
         try std.testing.expectEqual(8, n);
     }
 }

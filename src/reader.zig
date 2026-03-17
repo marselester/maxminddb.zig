@@ -66,10 +66,13 @@ pub fn LookupOptions(comptime T: type) type {
     };
 }
 
-pub const WithinOptions = struct {
-    only: ?[]const []const u8 = null,
-    include_empty_values: bool = false,
-};
+pub fn WithinOptions(comptime T: type) type {
+    return struct {
+        only: ?[]const []const u8 = null,
+        include_empty_values: bool = false,
+        cache: ?*Cache(T) = null,
+    };
+}
 
 pub const Reader = struct {
     metadata: Metadata,
@@ -236,12 +239,14 @@ pub const Reader = struct {
     }
 
     /// Iterates over blocks of IP networks.
+    ///
+    /// Adjacent networks often share the same record, so using a cache avoids redundant decoding.
     pub fn within(
         self: *Reader,
         allocator: std.mem.Allocator,
         T: type,
         network: net.Network,
-        options: WithinOptions,
+        options: WithinOptions(T),
     ) !Iterator(T) {
         const prefix_len: usize = network.prefix_len;
         const ip_raw = net.IP.init(network.ip);
@@ -290,7 +295,7 @@ pub const Reader = struct {
             .node_count = node_count,
             .stack = stack,
             .allocator = allocator,
-            .cache = .{},
+            .cache = options.cache,
             .field_names = options.only,
             .include_empty_values = options.include_empty_values,
         };
@@ -634,18 +639,15 @@ pub fn Iterator(T: type) type {
         allocator: std.mem.Allocator,
         field_names: ?[]const []const u8,
         include_empty_values: bool,
-        cache: Cache(T),
+        cache: ?*Cache(T),
 
         const Self = @This();
 
-        pub const Item = struct {
-            network: net.Network,
-            value: T,
-        };
-
         /// Returns the next network and its value.
-        /// The iterator owns the value; each call eventually invalidates the previous Item.
-        pub fn next(self: *Self) !?Item {
+        ///
+        /// Without a cache the returned Result owns an arena, so you should call deinit() to free it.
+        /// Otherwise the cache owns the memory, free it with cache.deinit().
+        pub fn next(self: *Self) !?Result(T) {
             while (self.stack.pop()) |current| {
                 const reader = self.reader;
                 const bit_count = current.ip_bytes.bitCount();
@@ -663,17 +665,17 @@ pub fn Iterator(T: type) type {
                 if (current.node > self.node_count) {
                     const ip_net = current.ip_bytes.network(current.prefix_len);
 
-                    // Check the ring buffer cache.
-                    // Recently decoded records are reused.
-                    if (self.cache.get(current.node)) |cached_value| {
-                        return Item{
-                            .network = ip_net,
-                            .value = cached_value,
-                        };
+                    if (self.cache) |cache| {
+                        if (cache.get(current.node)) |v| {
+                            return .{
+                                .network = ip_net,
+                                .value = v,
+                                .arena = null,
+                            };
+                        }
                     }
 
                     // Skip empty records (map with zero entries) unless requested.
-                    // Checked after cache lookup because skipped records are never decoded or cached.
                     if (!self.include_empty_values and try reader.isEmptyRecord(current.node)) {
                         continue;
                     }
@@ -688,15 +690,24 @@ pub fn Iterator(T: type) type {
                         self.field_names,
                     );
 
-                    self.cache.insert(.{
-                        .pointer = current.node,
-                        .value = value,
-                        .arena = entry_arena,
-                    });
+                    if (self.cache) |cache| {
+                        cache.insert(.{
+                            .pointer = current.node,
+                            .value = value,
+                            .arena = entry_arena,
+                        });
 
-                    return Item{
+                        return .{
+                            .network = ip_net,
+                            .value = value,
+                            .arena = null,
+                        };
+                    }
+
+                    return .{
                         .network = ip_net,
                         .value = value,
+                        .arena = entry_arena,
                     };
                 } else if (current.node < self.node_count) {
                     // In order traversal of the children on the right (1-bit).
@@ -731,7 +742,6 @@ pub fn Iterator(T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self.cache.deinit();
             self.stack.deinit(self.allocator);
         }
     };
