@@ -60,11 +60,12 @@ pub const Options = struct {
 
 pub const LookupOptions = struct {
     only: ?[]const []const u8 = null,
+    include_empty_values: bool = false,
 };
 
 pub const WithinOptions = struct {
     only: ?[]const []const u8 = null,
-    include_empty_values: bool = true,
+    include_empty_values: bool = false,
 };
 
 pub const Reader = struct {
@@ -197,6 +198,9 @@ pub const Reader = struct {
         }
 
         if (pointer == 0) {
+            return null;
+        }
+        if (!options.include_empty_values and try self.isEmptyRecord(pointer)) {
             return null;
         }
 
