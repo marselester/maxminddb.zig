@@ -8,8 +8,8 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     defer _ = gpa.detectLeaks();
 
-    var db = try maxminddb.Reader.mmap(allocator, db_path);
-    defer db.unmap();
+    var db = try maxminddb.Reader.mmap(allocator, db_path, .{});
+    defer db.close();
 
     const network = if (db.metadata.ip_version == 4)
         maxminddb.Network.all_ipv4
@@ -22,7 +22,6 @@ pub fn main() !void {
     // The iterator owns the values; each next() call invalidates the previous item.
     var n: usize = 0;
     while (try it.next()) |item| {
-
         const continent = item.value.continent.code;
         const country = item.value.country.iso_code;
         var city: []const u8 = "";

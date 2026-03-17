@@ -35,8 +35,8 @@ pub fn main() !void {
     std.debug.print("Opening database...\n", .{});
 
     var open_timer = try std.time.Timer.start();
-    var db = try maxminddb.Reader.mmap(allocator, db_path);
-    defer db.unmap();
+    var db = try maxminddb.Reader.mmap(allocator, db_path, .{ .ipv4_index_first_n_bits = 16 });
+    defer db.close();
     const open_time_ms = @as(f64, @floatFromInt(open_timer.read())) /
         @as(f64, @floatFromInt(std.time.ns_per_ms));
     std.debug.print("Database opened successfully in {d} ms. Type: {s}\n", .{

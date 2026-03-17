@@ -11,8 +11,8 @@ pub fn main() !void {
     const db_path = if (args.len > 1) args[1] else "test-data/test-data/GeoIP2-City-Test.mmdb";
     const ip = if (args.len > 2) args[2] else "89.160.20.128";
 
-    var db = try maxminddb.Reader.mmap(allocator, db_path);
-    defer db.unmap();
+    var db = try maxminddb.Reader.mmap(allocator, db_path, .{});
+    defer db.close();
 
     const result = try db.lookup(
         allocator,

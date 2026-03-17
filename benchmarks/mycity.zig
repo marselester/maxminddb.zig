@@ -1,10 +1,16 @@
-// The benchmark is contributed by @oschwald.
 const std = @import("std");
 const maxminddb = @import("maxminddb");
 
 const default_db_path: []const u8 = "GeoLite2-City.mmdb";
 const default_num_lookups: u64 = 1_000_000;
-const max_mmdb_fields = 32;
+
+const MyCity = struct {
+    city: struct {
+        names: struct {
+            en: []const u8 = "",
+        } = .{},
+    } = .{},
+};
 
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
@@ -14,20 +20,8 @@ pub fn main() !void {
 
     var db_path: []const u8 = default_db_path;
     var num_lookups = default_num_lookups;
-    var fields: ?[]const []const u8 = null;
     if (args.len > 1) db_path = args[1];
     if (args.len > 2) num_lookups = try std.fmt.parseUnsigned(u64, args[2], 10);
-    if (args.len > 3) {
-        var items: [max_mmdb_fields][]const u8 = undefined;
-
-        var it = std.mem.splitScalar(u8, args[3], ',');
-        var i: usize = 0;
-        while (it.next()) |part| : (i += 1) {
-            items[i] = part;
-        }
-
-        fields = items[0..i];
-    }
 
     std.debug.print("Benchmarking with:\n", .{});
     std.debug.print("  Database: {s}\n", .{db_path});
@@ -60,9 +54,9 @@ pub fn main() !void {
 
         const result = db.lookup(
             arena_allocator,
-            maxminddb.any.Value,
+            MyCity,
             ip,
-            .{ .only = fields },
+            .{},
         ) catch |err| {
             std.debug.print("! Lookup error for IP {any}: {any}\n", .{ ip, err });
             lookup_errors += 1;

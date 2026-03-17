@@ -7,7 +7,7 @@ It's based on [maxminddb-rust](https://github.com/oschwald/maxminddb-rust) imple
 You must create a copy if you wish to continue using the string when the database is closed.
 
 You'll need [MaxMind-DB/test-data](https://github.com/maxmind/MaxMind-DB/tree/main/test-data)
-to run tests/examples and `GeoLite2-City.mmdb` to run the benchmark.
+to run tests/examples and `GeoLite2-City.mmdb` to run the benchmarks.
 
 ```sh
 $ git submodule update --init
@@ -45,9 +45,18 @@ See [examples](./examples/).
 
 ## Suggestions
 
+Build the IPv4 index to speed up lookups with `.ipv4_index_first_n_bits` if you have a long-lived `Reader`.
+The recommended value is 16 (~320KB fits L2 cache, ~1-4ms to build when warm
+and ~10ms-120ms due to page faults) or 12 (~20KB) for constrained devices.
+
+```zig
+var db = try maxminddb.Reader.mmap(allocator, db_path, .{ .ipv4_index_first_n_bits = 16 });
+defer db.close();
+```
+
 Use `ArenaAllocator` for best performance, see [benchmarks](./benchmarks/).
 
-If you don't need all the fields, use `Options.only` to decode only the top-level fields you want.
+If you don't need all the fields, use `.only` to decode only the top-level fields you want.
 
 ```zig
 const fields = &.{ "city", "country" };
@@ -78,13 +87,14 @@ if (result) |r| {
 }
 ```
 
-Here are reference results on Apple M2 Pro (1M random IPv4 lookups against GeoLite2-City):
+Here are reference results on Apple M2 Pro (1M random IPv4 lookups against GeoLite2-City
+with `ipv4_index_first_n_bits = 16`):
 
 | Benchmark       | All fields | Filtered (city) |
 |---              |---         |---              |
-| `geolite2.City` | ~1,189,000 | ~1,245,000      |
-| `MyCity`        | ~1,228,000 | —               |
-| `any.Value`     | ~1,150,000 | ~1,234,000      |
+| `geolite2.City` | ~1,284,000 | ~1,348,000      |
+| `MyCity`        | ~1,383,000 | —               |
+| `any.Value`     | ~1,254,000 | ~1,349,000      |
 
 <details>
 
@@ -103,27 +113,51 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second (avg):939020.9936331962
-Lookups Per Second (avg):1202068.1587479531
-Lookups Per Second (avg):1226191.8873913633
-Lookups Per Second (avg):1190260.5152708234
-Lookups Per Second (avg):1187237.1418382763
-Lookups Per Second (avg):1180139.664667138
-Lookups Per Second (avg):1184298.3951793911
-Lookups Per Second (avg):1172927.7709424824
-Lookups Per Second (avg):1192207.8482477544
-Lookups Per Second (avg):1182672.4879777646
+Lookups Per Second (avg):1181277.2875127245
+Lookups Per Second (avg):1298229.636700173
+Lookups Per Second (avg):1284580.6443966748
+Lookups Per Second (avg):1293284.3402910086
+Lookups Per Second (avg):1285891.7841541092
+Lookups Per Second (avg):1283654.9587741245
+Lookups Per Second (avg):1287798.220295312
+Lookups Per Second (avg):1291991.2632139924
+Lookups Per Second (avg):1282363.8582417285
+Lookups Per Second (avg):1246191.3914272592
 ---
-Lookups Per Second (avg):1255008.2012150432
-Lookups Per Second (avg):1244663.9575842023
-Lookups Per Second (avg):1255868.10809833
-Lookups Per Second (avg):1244955.1445213587
-Lookups Per Second (avg):1221882.1368531892
-Lookups Per Second (avg):1255099.9559031925
-Lookups Per Second (avg):1251926.597665689
-Lookups Per Second (avg):1221997.1083589145
-Lookups Per Second (avg):1186516.0167055523
-Lookups Per Second (avg):1226974.481844842
+Lookups Per Second (avg):1323980.8070552205
+Lookups Per Second (avg):1351732.5910886768
+Lookups Per Second (avg):1351039.987754606
+Lookups Per Second (avg):1348480.894738865
+Lookups Per Second (avg):1357111.6649975393
+Lookups Per Second (avg):1348661.0150208646
+Lookups Per Second (avg):1357781.4722981465
+Lookups Per Second (avg):1356498.714039219
+Lookups Per Second (avg):1346452.11429767
+Lookups Per Second (avg):1315870.3443053183
+```
+
+</details>
+
+<details>
+
+<summary>MyCity</summary>
+
+```sh
+$ for i in $(seq 1 10); do
+    zig build benchmark_mycity -Doptimize=ReleaseFast -- GeoLite2-City.mmdb 1000000 \
+      2>&1 | grep 'Lookups Per Second'
+  done
+
+Lookups Per Second (avg):1405912.7999428671
+Lookups Per Second (avg):1376923.8357458028
+Lookups Per Second (avg):1372073.1321839818
+Lookups Per Second (avg):1378707.359082014
+Lookups Per Second (avg):1395492.1172529764
+Lookups Per Second (avg):1394880.1743390427
+Lookups Per Second (avg):1390645.867575583
+Lookups Per Second (avg):1373588.0075019994
+Lookups Per Second (avg):1372678.8857965483
+Lookups Per Second (avg):1387958.9236387985
 ```
 
 </details>
@@ -145,27 +179,27 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second (avg):975677.3396010846
-Lookups Per Second (avg):1140100.8142809793
-Lookups Per Second (avg):1148647.9154542664
-Lookups Per Second (avg):1159945.4593645008
-Lookups Per Second (avg):1146155.6701547962
-Lookups Per Second (avg):1152253.0540916577
-Lookups Per Second (avg):1168908.0392599553
-Lookups Per Second (avg):1138716.2824329527
-Lookups Per Second (avg):1150480.114967662
-Lookups Per Second (avg):1161504.7700823087
+Lookups Per Second (avg):1249814.6118740842
+Lookups Per Second (avg):1225988.817449499
+Lookups Per Second (avg):1264197.1313154744
+Lookups Per Second (avg):1270859.3015692532
+Lookups Per Second (avg):1261325.321815331
+Lookups Per Second (avg):1269464.4605490116
+Lookups Per Second (avg):1260642.9131866288
+Lookups Per Second (avg):1248199.6670115339
+Lookups Per Second (avg):1259984.7888336368
+Lookups Per Second (avg):1227344.2469651096
 ---
-Lookups Per Second (avg):1232606.0656379322
-Lookups Per Second (avg):1234686.4799143772
-Lookups Per Second (avg):1081398.2429103954
-Lookups Per Second (avg):1243047.4800630722
-Lookups Per Second (avg):1217435.2550309
-Lookups Per Second (avg):1237809.9577944186
-Lookups Per Second (avg):1232356.3798965935
-Lookups Per Second (avg):1242459.8219555076
-Lookups Per Second (avg):1213491.9682358333
-Lookups Per Second (avg):1241524.1410712942
+Lookups Per Second (avg):1366697.6894286321
+Lookups Per Second (avg):1359936.8717304142
+Lookups Per Second (avg):1350500.9773859177
+Lookups Per Second (avg):1345155.3802565804
+Lookups Per Second (avg):1354979.4314596548
+Lookups Per Second (avg):1363058.6900699302
+Lookups Per Second (avg):1351386.2025057953
+Lookups Per Second (avg):1360068.193819238
+Lookups Per Second (avg):1342324.820976454
+Lookups Per Second (avg):1315986.2950186788
 ```
 
 </details>
