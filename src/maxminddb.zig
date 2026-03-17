@@ -14,10 +14,11 @@ pub const Reader = reader.Reader;
 pub const Result = reader.Result;
 pub const Metadata = reader.Metadata;
 pub const Iterator = reader.Iterator;
-pub const Network = net.Network;
+pub const LookupCache = reader.Cache;
 pub const Options = reader.Options;
 pub const LookupOptions = reader.LookupOptions;
 pub const WithinOptions = reader.WithinOptions;
+pub const Network = net.Network;
 pub const Map = collection.Map;
 pub const Array = collection.Array;
 

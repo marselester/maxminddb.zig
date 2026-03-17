@@ -183,23 +183,8 @@ pub const Reader = struct {
         address: std.net.Address,
         options: LookupOptions,
     ) !?Result(T) {
-        const ip = net.IP.init(address);
-        if (ip.bitCount() == 128 and self.metadata.ip_version == 4) {
-            return ReadError.IPv6AddressInIPv4Database;
-        }
+        const pointer, const network = try self.findAddress(address) orelse return null;
 
-        var pointer: usize = 0;
-        var prefix_len: usize = 0;
-        if (self.ipv4_index != null and ip == .v4) {
-            pointer, prefix_len = try self.findAddressInTreeWithIndex(ip);
-        } else {
-            const start_node = self.startNode(ip.bitCount());
-            pointer, prefix_len = try self.findAddressInTree(ip, start_node, 0);
-        }
-
-        if (pointer == 0) {
-            return null;
-        }
         if (!options.include_empty_values and try self.isEmptyRecord(pointer)) {
             return null;
         }
@@ -215,9 +200,61 @@ pub const Reader = struct {
         );
 
         return .{
-            .network = ip.mask(prefix_len).network(prefix_len),
+            .network = network,
             .value = value,
             .arena = arena,
+        };
+    }
+
+    /// Looks up a value by an IP address using a cache.
+    /// Many IPs within the same network share the same record,
+    /// so the cache skips decoding on repeated hits.
+    ///
+    /// The caller owns the cache and each returned value is valid until its
+    /// cache entry is evicted.
+    pub fn lookupCached(
+        self: *Reader,
+        allocator: std.mem.Allocator,
+        T: type,
+        address: std.net.Address,
+        cache: *Cache(T),
+        options: LookupOptions,
+    ) !?struct {
+        network: net.Network,
+        value: T,
+    } {
+        const pointer, const network = try self.findAddress(address) orelse return null;
+
+        if (cache.get(pointer)) |v| {
+            return .{
+                .network = network,
+                .value = v,
+            };
+        }
+
+        if (!options.include_empty_values and try self.isEmptyRecord(pointer)) {
+            return null;
+        }
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+
+        const value = try self.resolveDataPointerAndDecode(
+            arena.allocator(),
+            T,
+            pointer,
+            options.only,
+        );
+
+        cache.insert(.{
+            .pointer = pointer,
+            .value = value,
+            .arena = arena,
+        });
+
+        return .{
+            .network = network,
+            .value = value,
         };
     }
 
@@ -280,6 +317,28 @@ pub const Reader = struct {
             .field_names = options.only,
             .include_empty_values = options.include_empty_values,
         };
+    }
+
+    fn findAddress(self: *Reader, address: std.net.Address) !?struct { usize, net.Network } {
+        const ip = net.IP.init(address);
+        if (ip.bitCount() == 128 and self.metadata.ip_version == 4) {
+            return ReadError.IPv6AddressInIPv4Database;
+        }
+
+        var pointer: usize = 0;
+        var prefix_len: usize = 0;
+        if (self.ipv4_index != null and ip == .v4) {
+            pointer, prefix_len = try self.findAddressInTreeWithIndex(ip);
+        } else {
+            const start_node = self.startNode(ip.bitCount());
+            pointer, prefix_len = try self.findAddressInTree(ip, start_node, 0);
+        }
+
+        if (pointer == 0) {
+            return null;
+        }
+
+        return .{ pointer, ip.mask(prefix_len).network(prefix_len) };
     }
 
     // Decodes database metadata which is stored as a separate data section,
@@ -515,6 +574,59 @@ pub const Reader = struct {
     }
 };
 
+/// Ring buffer cache of recently decoded records.
+/// The cache owns the memory that backs decoded values,
+/// so each value is valid until its cache entry is evicted.
+pub fn Cache(comptime T: type) type {
+    return struct {
+        entries: [cache_size]Entry = undefined,
+        // Indicates number of entries in the cache.
+        len: usize = 0,
+        // It's an index in the entries array where a new item will be written at.
+        write_pos: usize = 0,
+
+        // 16 showed a good tradeoff in DuckDB table scan and random IPv4 lookups,
+        // see https://github.com/marselester/duckdb-maxmind.
+        const cache_size = 16;
+        const Self = @This();
+        const Entry = struct {
+            pointer: usize,
+            value: T,
+            arena: std.heap.ArenaAllocator,
+        };
+
+        pub fn deinit(self: *Self) void {
+            for (self.entries[0..self.len]) |*e| {
+                e.arena.deinit();
+            }
+        }
+
+        fn get(self: *Self, pointer: usize) ?T {
+            for (self.entries[0..self.len]) |*e| {
+                if (e.pointer == pointer) {
+                    return e.value;
+                }
+            }
+
+            return null;
+        }
+
+        fn insert(self: *Self, e: Entry) void {
+            if (self.len < cache_size) {
+                self.entries[self.len] = e;
+                self.len += 1;
+
+                return;
+            }
+
+            // Evict the oldest entry and insert the new one.
+            self.entries[self.write_pos].arena.deinit();
+            self.entries[self.write_pos] = e;
+            self.write_pos = (self.write_pos + 1) % cache_size;
+        }
+    };
+}
+
 /// Result wraps a decoded value with an arena that owns all its allocations.
 /// Use deinit() to free the result's memory, or skip it when using an outer arena.
 pub fn Result(comptime T: type) type {
@@ -543,73 +655,7 @@ pub fn Iterator(T: type) type {
         allocator: std.mem.Allocator,
         field_names: ?[]const []const u8,
         include_empty_values: bool,
-        cache: Cache,
-
-        // Ring buffer cache of recently decoded records.
-        // Many adjacent networks in the tree share the same data pointer,
-        // so caching avoids re-decoding the same record repeatedly.
-        // Once full, new entries overwrite the oldest slot in a circular fashion.
-        // Each entry owns an arena that backs the decoded value's allocations;
-        // the arena is freed on eviction.
-        const Cache = struct {
-            const Entry = struct {
-                pointer: usize,
-                value: T,
-                arena: std.heap.ArenaAllocator,
-            };
-
-            // 16 showed a good tradeoff in DuckDB table scan,
-            // see https://github.com/marselester/duckdb-maxmind.
-            const cache_size = 16;
-            entries: [cache_size]Entry = undefined,
-            // Indicates number of entries in the cache.
-            len: usize = 0,
-            // It's an index in the entries array where a new item will be written at.
-            write_pos: usize = 0,
-
-            fn lookup(self: *Cache, pointer: usize) ?T {
-                for (self.entries[0..self.len]) |e| {
-                    if (e.pointer == pointer) {
-                        return e.value;
-                    }
-                }
-
-                return null;
-            }
-
-            fn insert(
-                self: *Cache,
-                pointer: usize,
-                value: T,
-                arena: std.heap.ArenaAllocator,
-            ) void {
-                if (self.len < cache_size) {
-                    self.entries[self.len] = .{
-                        .pointer = pointer,
-                        .value = value,
-                        .arena = arena,
-                    };
-                    self.len += 1;
-
-                    return;
-                }
-
-                // Evict oldest entry.
-                self.entries[self.write_pos].arena.deinit();
-                self.entries[self.write_pos] = .{
-                    .pointer = pointer,
-                    .value = value,
-                    .arena = arena,
-                };
-                self.write_pos = (self.write_pos + 1) % cache_size;
-            }
-
-            fn deinit(self: *Cache) void {
-                for (self.entries[0..self.len]) |*e| {
-                    e.arena.deinit();
-                }
-            }
-        };
+        cache: Cache(T),
 
         const Self = @This();
 
@@ -640,7 +686,7 @@ pub fn Iterator(T: type) type {
 
                     // Check the ring buffer cache.
                     // Recently decoded records are reused.
-                    if (self.cache.lookup(current.node)) |cached_value| {
+                    if (self.cache.get(current.node)) |cached_value| {
                         return Item{
                             .network = ip_net,
                             .value = cached_value,
@@ -663,7 +709,11 @@ pub fn Iterator(T: type) type {
                         self.field_names,
                     );
 
-                    self.cache.insert(current.node, value, entry_arena);
+                    self.cache.insert(.{
+                        .pointer = current.node,
+                        .value = value,
+                        .arena = entry_arena,
+                    });
 
                     return Item{
                         .network = ip_net,
