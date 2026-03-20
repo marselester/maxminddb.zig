@@ -16,8 +16,7 @@ pub fn main() !void {
     else
         maxminddb.Network.all_ipv6;
 
-    var it = try db.within(allocator, maxminddb.geolite2.City, network, .{});
-    defer it.deinit();
+    var it = try db.scan(maxminddb.geolite2.City, allocator, network, .{});
 
     var n: usize = 0;
     while (try it.next()) |item| {

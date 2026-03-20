@@ -41,39 +41,6 @@ const max_db_size: usize = if (@sizeOf(usize) >= 8)
 else
     2 * 1024 * 1024 * 1024;
 
-pub const Options = struct {
-    /// Builds an index of the first N bits of IPv4 addresses to speed up lookups,
-    /// but not the within() iterator.
-    ///
-    /// It adds a one-time build cost of ~1-4ms and uses memory proportional to 2^N.
-    /// The first open is slower (~10-120ms) because page faults load the tree from disk.
-    /// Best suited for long-lived Readers with many lookups.
-    ///
-    /// Sparse databases such as Anonymous-IP or ISP benefit more (~70%-140%)
-    /// because tree traversal dominates whereas dense databases (City, Enterprise)
-    /// benefit less (~12%-18%) because record decoding is the bottleneck.
-    ///
-    /// The recommended value is 16 (~320KB, fits L2 cache), or 12 (~20KB) for constrained devices.
-    /// The valid range is between 0 and 24 where 0 disables the index.
-    ipv4_index_first_n_bits: u8 = 0,
-};
-
-pub fn LookupOptions(comptime T: type) type {
-    return struct {
-        only: ?[]const []const u8 = null,
-        include_empty_values: bool = false,
-        cache: ?*Cache(T) = null,
-    };
-}
-
-pub fn WithinOptions(comptime T: type) type {
-    return struct {
-        only: ?[]const []const u8 = null,
-        include_empty_values: bool = false,
-        cache: ?*Cache(T) = null,
-    };
-}
-
 pub const Reader = struct {
     metadata: Metadata,
     src: []const u8,
@@ -92,6 +59,33 @@ pub const Reader = struct {
     ipv4_index_prefix_len: ?[]u8,
     is_mapped: bool,
     arena: *std.heap.ArenaAllocator,
+
+    pub const Options = struct {
+        /// Builds an index of the first N bits of IPv4 addresses to speed up lookups,
+        /// but not the scan() iterator.
+        ///
+        /// It adds a one-time build cost of ~1-4ms and uses memory proportional to 2^N.
+        /// The first open is slower (~10-120ms) because page faults load the tree from disk.
+        /// Best suited for long-lived Readers with many lookups.
+        ///
+        /// Sparse databases such as Anonymous-IP or ISP benefit more (~70%-140%)
+        /// because tree traversal dominates whereas dense databases (City, Enterprise)
+        /// benefit less (~12%-18%) because record decoding is the bottleneck.
+        ///
+        /// The recommended value is 16 (~320KB, fits L2 cache), or 12 (~20KB) for constrained devices.
+        /// The valid range is between 0 and 24 where 0 disables the index.
+        ipv4_index_first_n_bits: u8 = 0,
+    };
+
+    pub const LookupOptions = struct {
+        only: ?[]const []const u8 = null,
+        include_empty_values: bool = false,
+    };
+
+    pub const ScanOptions = struct {
+        only: ?[]const []const u8 = null,
+        include_empty_values: bool = false,
+    };
 
     fn init(arena: *std.heap.ArenaAllocator, src: []const u8, options: Options) !Reader {
         const metadata = try decodeMetadata(arena.allocator(), src);
@@ -182,26 +176,15 @@ pub const Reader = struct {
 
     /// Looks up a value by an IP address.
     ///
-    /// Without a cache the returned Result owns an arena, so you should call deinit() to free it.
-    /// Otherwise the cache owns the memory, free it with cache.deinit().
+    /// The returned Result owns an arena, so you should call deinit() to free it.
     pub fn lookup(
         self: *Reader,
-        allocator: std.mem.Allocator,
         T: type,
+        allocator: std.mem.Allocator,
         address: std.net.Address,
-        options: LookupOptions(T),
+        options: LookupOptions,
     ) !?Result(T) {
         const pointer, const network = try self.findAddress(address) orelse return null;
-
-        if (options.cache) |cache| {
-            if (cache.get(pointer)) |v| {
-                return .{
-                    .network = network,
-                    .value = v,
-                    .arena = null,
-                };
-            }
-        }
 
         if (!options.include_empty_values and try self.isEmptyRecord(pointer)) {
             return null;
@@ -217,20 +200,6 @@ pub const Reader = struct {
             options.only,
         );
 
-        if (options.cache) |cache| {
-            cache.insert(.{
-                .pointer = pointer,
-                .value = value,
-                .arena = arena,
-            });
-
-            return .{
-                .network = network,
-                .value = value,
-                .arena = null,
-            };
-        }
-
         return .{
             .network = network,
             .value = value,
@@ -238,15 +207,87 @@ pub const Reader = struct {
         };
     }
 
-    /// Iterates over blocks of IP networks.
+    /// Looks up a value by an IP address, using a cache.
+    ///
+    /// The cache owns the decoded memory, free it with cache.deinit().
+    pub fn lookupWithCache(
+        self: *Reader,
+        T: type,
+        cache: *Cache(T),
+        address: std.net.Address,
+        options: LookupOptions,
+    ) !?Result(T) {
+        const pointer, const network = try self.findAddress(address) orelse return null;
+
+        if (cache.get(pointer)) |v| {
+            return .{
+                .network = network,
+                .value = v,
+                .arena = null,
+            };
+        }
+
+        if (!options.include_empty_values and try self.isEmptyRecord(pointer)) {
+            return null;
+        }
+
+        var arena = std.heap.ArenaAllocator.init(cache.allocator);
+        errdefer arena.deinit();
+
+        const value = try self.resolveDataPointerAndDecode(
+            arena.allocator(),
+            T,
+            pointer,
+            options.only,
+        );
+
+        cache.insert(.{
+            .pointer = pointer,
+            .value = value,
+            .arena = arena,
+        });
+
+        return .{
+            .network = network,
+            .value = value,
+            .arena = null,
+        };
+    }
+
+    /// Scans networks within the given IP range.
+    ///
+    /// Each returned Result owns an arena, so you should call deinit() to free it.
+    pub fn scan(
+        self: *Reader,
+        T: type,
+        allocator: std.mem.Allocator,
+        network: net.Network,
+        options: ScanOptions,
+    ) !Iterator(T) {
+        return self.initIterator(allocator, T, network, null, options);
+    }
+
+    /// Scans networks within the given IP range, using a cache.
     ///
     /// Adjacent networks often share the same record, so using a cache avoids redundant decoding.
-    pub fn within(
+    /// The cache owns the decoded memory, free it with cache.deinit().
+    pub fn scanWithCache(
+        self: *Reader,
+        T: type,
+        cache: *Cache(T),
+        network: net.Network,
+        options: ScanOptions,
+    ) !Iterator(T) {
+        return self.initIterator(cache.allocator, T, network, cache, options);
+    }
+
+    fn initIterator(
         self: *Reader,
         allocator: std.mem.Allocator,
         T: type,
         network: net.Network,
-        options: WithinOptions(T),
+        cache: ?*Cache(T),
+        options: ScanOptions,
     ) !Iterator(T) {
         const prefix_len: usize = network.prefix_len;
         const ip_raw = net.IP.init(network.ip);
@@ -262,9 +303,6 @@ pub const Reader = struct {
         var node = self.startNode(bit_count);
         const node_count = self.metadata.node_count;
 
-        var stack = try std.ArrayList(WithinNode).initCapacity(allocator, bit_count - prefix_len + 1);
-        errdefer stack.deinit(allocator);
-
         const ip_bytes = ip_raw.mask(prefix_len);
         // Traverse down the tree to the level that matches the CIDR mark.
         // Track depth as number of tree edges traversed (becomes the network prefix length).
@@ -279,26 +317,27 @@ pub const Reader = struct {
             }
         }
 
+        var it = Iterator(T){
+            .reader = self,
+            .node_count = node_count,
+            .allocator = allocator,
+            .cache = cache,
+            .field_names = options.only,
+            .include_empty_values = options.include_empty_values,
+        };
+
         // Push the node to the stack unless it's "not found" (equal to node_count).
         // Data pointer (> node_count) indicates that record's network contains the query prefix.
         // Internal node (< node_count) indicates that we need to explore its subtree.
         if (node != node_count) {
-            stack.appendAssumeCapacity(WithinNode{
+            it.push(.{
                 .node = node,
                 .ip_bytes = ip_bytes.mask(depth),
                 .prefix_len = depth,
             });
         }
 
-        return .{
-            .reader = self,
-            .node_count = node_count,
-            .stack = stack,
-            .allocator = allocator,
-            .cache = options.cache,
-            .field_names = options.only,
-            .include_empty_values = options.include_empty_values,
-        };
+        return it;
     }
 
     fn findAddress(self: *Reader, address: std.net.Address) !?struct { usize, net.Network } {
@@ -559,29 +598,48 @@ pub const Reader = struct {
 /// Ring buffer cache of recently decoded records.
 /// The cache owns the memory that backs decoded values,
 /// so each value is valid until its cache entry is evicted.
+///
+/// The default size of 16 is good for most databases.
+/// Country databases benefit from larger sizes, e.g., 64 or larger.
 pub fn Cache(comptime T: type) type {
     return struct {
-        entries: [cache_size]Entry = undefined,
+        entries: []Entry,
         // Indicates number of entries in the cache.
         len: usize = 0,
         // It's an index in the entries array where a new item will be written at.
         write_pos: usize = 0,
+        allocator: std.mem.Allocator,
 
-        // 16 showed a good tradeoff in DuckDB table scan and random IPv4 lookups,
-        // see https://github.com/marselester/duckdb-maxmind.
-        const cache_size = 16;
         const Self = @This();
-        const Entry = struct {
-            pointer: usize,
-            value: T,
-            arena: std.heap.ArenaAllocator,
+
+        pub const Options = struct {
+            size: usize = 16,
         };
+
+        pub fn init(allocator: std.mem.Allocator, options: Self.Options) !Self {
+            if (options.size == 0) {
+                return error.InvalidCacheSize;
+            }
+
+            return .{
+                .entries = try allocator.alloc(Entry, options.size),
+                .allocator = allocator,
+            };
+        }
 
         pub fn deinit(self: *Self) void {
             for (self.entries[0..self.len]) |*e| {
                 e.arena.deinit();
             }
+
+            self.allocator.free(self.entries);
         }
+
+        const Entry = struct {
+            pointer: usize,
+            value: T,
+            arena: std.heap.ArenaAllocator,
+        };
 
         fn get(self: *Self, pointer: usize) ?T {
             for (self.entries[0..self.len]) |*e| {
@@ -594,7 +652,7 @@ pub fn Cache(comptime T: type) type {
         }
 
         fn insert(self: *Self, e: Entry) void {
-            if (self.len < cache_size) {
+            if (self.len < self.entries.len) {
                 self.entries[self.len] = e;
                 self.len += 1;
 
@@ -604,7 +662,7 @@ pub fn Cache(comptime T: type) type {
             // Evict the oldest entry and insert the new one.
             self.entries[self.write_pos].arena.deinit();
             self.entries[self.write_pos] = e;
-            self.write_pos = (self.write_pos + 1) % cache_size;
+            self.write_pos = (self.write_pos + 1) % self.entries.len;
         }
     };
 }
@@ -625,7 +683,7 @@ pub fn Result(comptime T: type) type {
     };
 }
 
-const WithinNode = struct {
+const ScanNode = struct {
     ip_bytes: net.IP,
     prefix_len: usize,
     node: usize,
@@ -635,12 +693,16 @@ pub fn Iterator(T: type) type {
     return struct {
         reader: *Reader,
         node_count: usize,
-        stack: std.ArrayList(WithinNode),
+        // Fixed-capacity stack for DFS traversal.
+        stack: [max_stack_size]ScanNode = undefined,
+        stack_len: usize = 0,
         allocator: std.mem.Allocator,
         field_names: ?[]const []const u8,
         include_empty_values: bool,
         cache: ?*Cache(T),
 
+        // Max depth is bit_count - prefix_len + 1 (129 for IPv6 /0).
+        const max_stack_size = 129;
         const Self = @This();
 
         /// Returns the next network and its value.
@@ -648,7 +710,7 @@ pub fn Iterator(T: type) type {
         /// Without a cache the returned Result owns an arena, so you should call deinit() to free it.
         /// Otherwise the cache owns the memory, free it with cache.deinit().
         pub fn next(self: *Self) !?Result(T) {
-            while (self.stack.pop()) |current| {
+            while (self.pop()) |current| {
                 const reader = self.reader;
                 const bit_count = current.ip_bytes.bitCount();
 
@@ -722,7 +784,7 @@ pub fn Iterator(T: type) type {
                         }
                     }
 
-                    self.stack.appendAssumeCapacity(WithinNode{
+                    self.push(.{
                         .node = node,
                         .ip_bytes = right_ip_bytes,
                         .prefix_len = current.prefix_len + 1,
@@ -730,7 +792,7 @@ pub fn Iterator(T: type) type {
 
                     // In order traversal of the children on the left (0-bit).
                     node = reader.readNode(current.node, 0);
-                    self.stack.appendAssumeCapacity(WithinNode{
+                    self.push(.{
                         .node = node,
                         .ip_bytes = current.ip_bytes,
                         .prefix_len = current.prefix_len + 1,
@@ -741,8 +803,18 @@ pub fn Iterator(T: type) type {
             return null;
         }
 
-        pub fn deinit(self: *Self) void {
-            self.stack.deinit(self.allocator);
+        fn push(self: *Self, node: ScanNode) void {
+            self.stack[self.stack_len] = node;
+            self.stack_len += 1;
+        }
+
+        fn pop(self: *Self) ?ScanNode {
+            if (self.stack_len == 0) {
+                return null;
+            }
+
+            self.stack_len -= 1;
+            return self.stack[self.stack_len];
         }
     };
 }

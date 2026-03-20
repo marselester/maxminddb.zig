@@ -25,7 +25,7 @@ jobs:
         run: zig build test
       - name: Run lookup example
         run: zig build example_lookup
-      - name: Run within example
-        run: zig build example_within
+      - name: Run scan example
+        run: zig build example_scan
       - name: Run inspect example
         run: zig build example_inspect

@@ -59,8 +59,8 @@ pub fn main() !void {
         const ip = std.net.Address.initIp4(ip_bytes, 0);
 
         const result = db.lookup(
-            arena_allocator,
             maxminddb.geolite2.City,
+            arena_allocator,
             ip,
             .{ .only = fields },
         ) catch |err| {

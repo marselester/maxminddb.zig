@@ -31,19 +31,18 @@ pub fn main() !void {
     else
         maxminddb.Network.all_ipv6;
 
-    var cache: maxminddb.Cache(maxminddb.any.Value) = .{};
+    var cache = try maxminddb.Cache(maxminddb.any.Value).init(allocator, .{});
     defer cache.deinit();
 
     std.debug.print("Starting benchmark...\n", .{});
     var timer = try std.time.Timer.start();
 
-    var it = try db.within(
-        allocator,
+    var it = try db.scanWithCache(
         maxminddb.any.Value,
+        &cache,
         network,
-        .{ .cache = &cache },
+        .{},
     );
-    defer it.deinit();
 
     var n: usize = 0;
     while (try it.next()) |_| {

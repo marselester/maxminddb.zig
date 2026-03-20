@@ -54,13 +54,37 @@ var db = try maxminddb.Reader.mmap(allocator, db_path, .{ .ipv4_index_first_n_bi
 defer db.close();
 ```
 
-Use `ArenaAllocator` for best performance, see [benchmarks](./benchmarks/).
+Each `lookup` result owns an arena with all decoded allocations.
+Call `deinit()` to free it or use `ArenaAllocator` with `reset()`,
+see [benchmarks](./benchmarks/lookup.zig).
+
+```zig
+if (try db.lookup(maxminddb.geolite2.City, allocator, ip, .{})) |result| {
+    defer result.deinit();
+    std.debug.print("{f} {s}\n", .{ result.network, result.value.city.names.?.get("en").? });
+}
+
+var arena = std.heap.ArenaAllocator.init(allocator);
+defer arena.deinit();
+
+const arena_allocator = arena.allocator();
+for (ips) |ip| {
+    if (try db.lookup(maxminddb.geolite2.City, arena_allocator, ip, .{})) |result| {
+        std.debug.print("{f} {s}\n", .{ result.network, result.value.city.names.?.get("en").? });
+    }
+
+    _ = arena.reset(.retain_capacity);
+}
+```
 
 If you don't need all the fields, use `.only` to decode only the top-level fields you want.
 
 ```zig
 const fields = &.{ "city", "country" };
-const city = try db.lookup(allocator, maxminddb.geolite2.City, ip, .{ .only = fields });
+if (try db.lookup(maxminddb.geolite2.City, allocator, ip, .{ .only = fields })) |result| {
+    defer result.deinit();
+    std.debug.print("{f} {s}\n", .{ result.network, result.value.city.names.?.get("en").? });
+}
 ```
 
 Alternatively, define your own struct with only the fields you need.
@@ -74,36 +98,42 @@ const MyCity = struct {
     } = .{},
 };
 
-const city = try db.lookup(allocator, MyCity, ip, .{});
+if (try db.lookup(MyCity, allocator, ip, .{})) |result| {
+    defer result.deinit();
+    std.debug.print("{s}\n", .{result.value.city.names.en});
+}
 ```
 
 Use `any.Value` to decode any record without knowing the schema.
 
 ```zig
-const result = try db.lookup(allocator, maxminddb.any.Value, ip, .{ .only = fields });
-if (result) |r| {
+if (try db.lookup(maxminddb.any.Value, allocator, ip, .{ .only = fields })) |result| {
+    defer result.deinit();
     // Formats as compact JSON.
-    std.debug.print("{f}\n", .{r.value});
+    std.debug.print("{f}\n", .{result.value});
 }
 ```
 
-Use a `Cache` to skip decoding when different IPs resolve to the same record.
+Use `lookupWithCache` to skip decoding when different IPs resolve to the same record.
+The cache owns decoded memory, so results don't need to be individually freed.
 
 ```zig
-var cache: maxminddb.Cache(maxminddb.geolite2.City) = .{};
+var cache = try maxminddb.Cache(maxminddb.geolite2.City).init(allocator, .{});
 defer cache.deinit();
 
-const city = try db.lookup(allocator, maxminddb.geolite2.City, ip, .{ .cache = &cache });
+if (try db.lookupWithCache(maxminddb.geolite2.City, &cache, ip, .{})) |result| {
+    std.debug.print("{f} {s}\n", .{ result.network, result.value.city.names.?.get("en").? });
+}
 ```
 
 Here are reference results on Apple M2 Pro (1M random IPv4 lookups against GeoLite2-City
 with `ipv4_index_first_n_bits = 16`):
 
-| Type             | Default    | `.only`    | `Cache`    |
-|---               |---         |---         |---         |
-| `geolite2.City`  | ~1,284,000 | ~1,348,000 | ~1,474,000 |
-| `MyCity`         | ~1,383,000 |            |            |
-| `any.Value`      | ~1,254,000 | ~1,349,000 |            |
+| Type            | Default    | `.only`    | `Cache`    |
+|---              |---         |---         |---         |
+| `geolite2.City` | ~1,420,000 | ~1,348,000 | ~1,565,000 |
+| `MyCity`        | ~1,383,000 |            |            |
+| `any.Value`     | ~1,254,000 | ~1,349,000 |            |
 
 <details>
 
@@ -237,34 +267,37 @@ Lookups Per Second (avg):1315986.2950186788
 
 </details>
 
-Use `within()` to iterate over all networks in the database.
-A `Cache` avoids re-decoding networks that share the same record.
+Use `scan` to iterate over all networks in the database.
 
 ```zig
-var cache: maxminddb.Cache(maxminddb.any.Value) = .{};
-defer cache.deinit();
-
-var it = try db.within(
-    allocator,
-    maxminddb.any.Value,
-    maxminddb.Network.all_ipv6,
-    .{ .cache = &cache },
-);
-defer it.deinit();
+var it = try db.scan(maxminddb.any.Value, allocator, maxminddb.Network.all_ipv6, .{});
 
 while (try it.next()) |item| {
-    std.debug.print("{f} {f}\n", .{item.network, item.value});
+    defer item.deinit();
+    std.debug.print("{f} {f}\n", .{ item.network, item.value });
 }
 ```
 
-Without a cache each result owns its memory and must be freed with `item.deinit()`.
+Use `scanWithCache` to avoid re-decoding networks that share the same record.
+The cache owns decoded memory, so results don't need to be individually freed.
+
+```zig
+var cache = try maxminddb.Cache(maxminddb.any.Value).init(allocator, .{});
+defer cache.deinit();
+
+var it = try db.scanWithCache(maxminddb.any.Value, &cache, maxminddb.Network.all_ipv6, .{});
+
+while (try it.next()) |item| {
+    std.debug.print("{f} {f}\n", .{ item.network, item.value });
+}
+```
 
 Here are reference results on Apple M2 Pro (full GeoLite2-City scan using `any.Value`):
 
-| Mode      | Records/sec |
-|---        |---          |
-| Default   | ~1,235,000  |
-| `Cache`   | ~2,900,000  |
+| Mode    | Records/sec |
+|---      |---          |
+| Default | ~1,295,000  |
+| `Cache` | ~2,930,000  |
 
 <details>
 
@@ -272,7 +305,7 @@ Here are reference results on Apple M2 Pro (full GeoLite2-City scan using `any.V
 
 ```sh
 $ for i in $(seq 1 10); do
-    zig build benchmark_within -Doptimize=ReleaseFast -- GeoLite2-City.mmdb \
+    zig build benchmark_scan -Doptimize=ReleaseFast -- GeoLite2-City.mmdb \
       2>&1 | grep 'Records Per Second'
   done
 
@@ -296,7 +329,7 @@ Records Per Second: 1246311.587919839
 
 ```sh
 $ for i in $(seq 1 10); do
-    zig build benchmark_within_cache -Doptimize=ReleaseFast -- GeoLite2-City.mmdb \
+    zig build benchmark_scan_cache -Doptimize=ReleaseFast -- GeoLite2-City.mmdb \
       2>&1 | grep 'Records Per Second'
   done
 

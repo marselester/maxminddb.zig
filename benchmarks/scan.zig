@@ -34,8 +34,7 @@ pub fn main() !void {
     std.debug.print("Starting benchmark...\n", .{});
     var timer = try std.time.Timer.start();
 
-    var it = try db.within(allocator, maxminddb.any.Value, network, .{});
-    defer it.deinit();
+    var it = try db.scan(maxminddb.any.Value, allocator, network, .{});
 
     var n: usize = 0;
     while (try it.next()) |item| {

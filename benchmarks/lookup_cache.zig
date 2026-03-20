@@ -43,12 +43,8 @@ pub fn main() !void {
         db.metadata.database_type,
     });
 
-    var cache: maxminddb.Cache(maxminddb.geolite2.City) = .{};
+    var cache = try maxminddb.Cache(maxminddb.geolite2.City).init(allocator, .{});
     defer cache.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
 
     std.debug.print("Starting benchmark...\n", .{});
     var timer = try std.time.Timer.start();
@@ -60,11 +56,11 @@ pub fn main() !void {
         std.crypto.random.bytes(&ip_bytes);
         const ip = std.net.Address.initIp4(ip_bytes, 0);
 
-        const result = db.lookup(
-            arena_allocator,
+        const result = db.lookupWithCache(
             maxminddb.geolite2.City,
+            &cache,
             ip,
-            .{ .only = fields, .cache = &cache },
+            .{ .only = fields },
         ) catch |err| {
             std.debug.print("! Lookup error for IP {any}: {any}\n", .{ ip, err });
             lookup_errors += 1;
@@ -74,8 +70,6 @@ pub fn main() !void {
             not_found_count += 1;
             continue;
         }
-
-        _ = arena.reset(.retain_capacity);
     }
 
     const elapsed_ns = timer.read();

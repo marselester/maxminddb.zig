@@ -27,14 +27,14 @@ pub fn build(b: *std.Build) void {
         name: []const u8,
     }{
         .{ .file = "examples/lookup.zig", .name = "example_lookup" },
-        .{ .file = "examples/within.zig", .name = "example_within" },
         .{ .file = "examples/inspect.zig", .name = "example_inspect" },
+        .{ .file = "examples/scan.zig", .name = "example_scan" },
         .{ .file = "benchmarks/lookup.zig", .name = "benchmark_lookup" },
         .{ .file = "benchmarks/lookup_cache.zig", .name = "benchmark_lookup_cache" },
         .{ .file = "benchmarks/mycity.zig", .name = "benchmark_mycity" },
         .{ .file = "benchmarks/inspect.zig", .name = "benchmark_inspect" },
-        .{ .file = "benchmarks/within.zig", .name = "benchmark_within" },
-        .{ .file = "benchmarks/within_cache.zig", .name = "benchmark_within_cache" },
+        .{ .file = "benchmarks/scan.zig", .name = "benchmark_scan" },
+        .{ .file = "benchmarks/scan_cache.zig", .name = "benchmark_scan_cache" },
     };
 
     {
