@@ -16,12 +16,12 @@ pub fn main() !void {
     else
         maxminddb.Network.all_ipv6;
 
-    var it = try db.within(allocator, maxminddb.geolite2.City, network, .{});
-    defer it.deinit();
+    var it = try db.scan(maxminddb.geolite2.City, allocator, network, .{});
 
-    // The iterator owns the values; each next() call invalidates the previous item.
     var n: usize = 0;
     while (try it.next()) |item| {
+        defer item.deinit();
+
         const continent = item.value.continent.code;
         const country = item.value.country.iso_code;
         var city: []const u8 = "";

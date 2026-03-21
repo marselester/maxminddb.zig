@@ -1,4 +1,3 @@
-// The benchmark is contributed by @oschwald.
 const std = @import("std");
 const maxminddb = @import("maxminddb");
 
@@ -44,9 +43,8 @@ pub fn main() !void {
         db.metadata.database_type,
     });
 
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
+    var cache = try maxminddb.Cache(maxminddb.geolite2.City).init(allocator, .{});
+    defer cache.deinit();
 
     std.debug.print("Starting benchmark...\n", .{});
     var timer = try std.time.Timer.start();
@@ -58,9 +56,9 @@ pub fn main() !void {
         std.crypto.random.bytes(&ip_bytes);
         const ip = std.net.Address.initIp4(ip_bytes, 0);
 
-        const result = db.lookup(
-            maxminddb.any.Value,
-            arena_allocator,
+        const result = db.lookupWithCache(
+            maxminddb.geolite2.City,
+            &cache,
             ip,
             .{ .only = fields },
         ) catch |err| {
@@ -72,8 +70,6 @@ pub fn main() !void {
             not_found_count += 1;
             continue;
         }
-
-        _ = arena.reset(.retain_capacity);
     }
 
     const elapsed_ns = timer.read();

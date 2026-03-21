@@ -15,8 +15,8 @@ pub fn main() !void {
     defer db.close();
 
     const result = try db.lookup(
-        allocator,
         maxminddb.any.Value,
+        allocator,
         try std.net.Address.parseIp(ip, 0),
         .{},
     ) orelse {
