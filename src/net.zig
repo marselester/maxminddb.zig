@@ -23,8 +23,14 @@ pub const Network = struct {
             };
         }
 
+        const ip = try std.net.Address.parseIp(s, 0);
         return .{
-            .ip = try std.net.Address.parseIp(s, 0),
+            .ip = ip,
+            .prefix_len = switch (ip.any.family) {
+                std.posix.AF.INET => 32,
+                std.posix.AF.INET6 => 128,
+                else => unreachable,
+            },
         };
     }
 
@@ -102,8 +108,11 @@ test "Network.parse" {
     const got_v6 = try std.fmt.bufPrint(&buf, "{f}", .{v6});
     try std.testing.expectEqualStrings("2001:0db8:0000:0000:0000:0000:0000:0000/32", got_v6);
 
-    const no_cidr = try Network.parse("10.0.0.1");
-    try std.testing.expectEqual(0, no_cidr.prefix_len);
+    const no_cidr_v4 = try Network.parse("10.0.0.1");
+    try std.testing.expectEqual(32, no_cidr_v4.prefix_len);
+
+    const no_cidr_v6 = try Network.parse("2001:db8::1");
+    try std.testing.expectEqual(128, no_cidr_v6.prefix_len);
 }
 
 // Represents IPv4 or IPv6 bytes.
