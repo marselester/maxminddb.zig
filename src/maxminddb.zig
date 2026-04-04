@@ -4,6 +4,7 @@ const reader = @import("reader.zig");
 const decoder = @import("decoder.zig");
 const collection = @import("collection.zig");
 const net = @import("net.zig");
+const filter = @import("filter.zig");
 
 pub const any = @import("any.zig");
 pub const geolite2 = @import("geolite2.zig");
@@ -18,6 +19,7 @@ pub const Cache = reader.Cache;
 pub const Network = net.Network;
 pub const Map = collection.Map;
 pub const Array = collection.Array;
+pub const Fields = filter.Fields;
 
 /// Maps the metadata.database_type to a known GeoLite/GeoIP record type.
 pub const DatabaseType = enum {
