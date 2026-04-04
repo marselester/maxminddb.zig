@@ -45,22 +45,32 @@ pub const DatabaseType = enum {
             return null;
         }
 
+        // Convert hyphen-separated words to snake_case, skipping product variant decorators.
+        // Shield and Precision variants use the same schemas as their base types.
         var i: usize = 0;
-        for (database_type) |c| {
-            switch (c) {
-                'a'...'z' => {
-                    db_type_snake[i] = c;
-                    i += 1;
-                },
-                'A'...'Z' => {
-                    db_type_snake[i] = std.ascii.toLower(c);
-                    i += 1;
-                },
-                '-' => {
-                    db_type_snake[i] = '_';
-                    i += 1;
-                },
-                else => continue,
+        var it = std.mem.splitScalar(u8, database_type, '-');
+        while (it.next()) |part| {
+            if (std.mem.eql(u8, part, "Shield") or std.mem.eql(u8, part, "Precision")) {
+                continue;
+            }
+
+            if (i > 0) {
+                db_type_snake[i] = '_';
+                i += 1;
+            }
+
+            for (part) |c| {
+                switch (c) {
+                    'a'...'z' => {
+                        db_type_snake[i] = c;
+                        i += 1;
+                    },
+                    'A'...'Z' => {
+                        db_type_snake[i] = std.ascii.toLower(c);
+                        i += 1;
+                    },
+                    else => continue,
+                }
             }
         }
 
@@ -133,6 +143,15 @@ test DatabaseType {
             return error.TestUnexpectedDatabaseType;
         },
     }
+
+    // Shield variants map to their base types.
+    try expectEqual(DatabaseType.geoip_city, DatabaseType.new("GeoIP2-City-Shield"));
+    try expectEqual(DatabaseType.geoip_country, DatabaseType.new("GeoIP2-Country-Shield"));
+    try expectEqual(DatabaseType.geoip_enterprise, DatabaseType.new("GeoIP2-Enterprise-Shield"));
+
+    // Precision variants map to their base types.
+    try expectEqual(DatabaseType.geoip_enterprise, DatabaseType.new("GeoIP2-Precision-Enterprise"));
+    try expectEqual(DatabaseType.geoip_enterprise, DatabaseType.new("GeoIP2-Precision-Enterprise-Shield"));
 }
 
 test "GeoLite2 Country" {
