@@ -126,6 +126,17 @@ if (try db.lookupWithCache(maxminddb.geolite2.City, &cache, ip, .{})) |result| {
 }
 ```
 
+Use `find` to check if an IP exists without decoding or to separate tree traversal from decoding.
+
+```zig
+if (try db.find(ip)) |entry| {
+    if (try db.decode(maxminddb.geolite2.City, allocator, entry, .{})) |result| {
+        defer result.deinit();
+        std.debug.print("{s}\n", .{result.value.city.names.?.get("en").?});
+    }
+}
+```
+
 Here are reference results on Apple M2 Pro (1M random IPv4 lookups against GeoLite2-City
 with `ipv4_index_first_n_bits = 16`):
 
