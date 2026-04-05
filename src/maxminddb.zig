@@ -893,6 +893,23 @@ test "lookup with any.Value and field name filtering" {
     try expectEqual(null, got.value.get("location"));
 }
 
+test "decodeMetadata as any.Value" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const meta = try Reader.decodeMetadata(any.Value, arena.allocator(), db.src);
+    try expectEqualStrings("GeoLite2-City", meta.get("database_type").?.string);
+    try expectEqual(@as(u16, 6), meta.get("ip_version").?.uint16);
+    try expectEqual(@as(u16, 2), meta.get("binary_format_major_version").?.uint16);
+}
+
 test "scan returns all networks" {
     var db = try Reader.mmap(
         allocator,
