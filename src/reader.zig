@@ -212,6 +212,7 @@ pub const Reader = struct {
                 .network = entry.network,
                 .value = v,
                 .arena = null,
+                .pointer = entry.pointer,
             };
         }
 
@@ -239,6 +240,7 @@ pub const Reader = struct {
             .network = entry.network,
             .value = value,
             .arena = null,
+            .pointer = entry.pointer,
         };
     }
 
@@ -296,6 +298,7 @@ pub const Reader = struct {
             .network = entry.network,
             .value = value,
             .arena = arena,
+            .pointer = entry.pointer,
         };
     }
 
@@ -694,6 +697,10 @@ pub fn Cache(comptime T: type) type {
 /// When a cache is used, the cache owns the memory and arena is null.
 pub fn Result(comptime T: type) type {
     return struct {
+        /// Raw pointer into the data section as stored in the search tree.
+        /// Two results with the same pointer reference the same data record.
+        /// This is the same value as Entry.pointer and Cache.Entry.pointer.
+        pointer: usize,
         network: net.Network,
         value: T,
         arena: ?std.heap.ArenaAllocator,
@@ -756,6 +763,7 @@ pub fn Iterator(T: type) type {
                                 .network = ip_net,
                                 .value = v,
                                 .arena = null,
+                                .pointer = current.node,
                             };
                         }
                     }
@@ -786,6 +794,7 @@ pub fn Iterator(T: type) type {
                             .network = ip_net,
                             .value = value,
                             .arena = null,
+                            .pointer = current.node,
                         };
                     }
 
@@ -793,6 +802,7 @@ pub fn Iterator(T: type) type {
                         .network = ip_net,
                         .value = value,
                         .arena = entry_arena,
+                        .pointer = current.node,
                     };
                 } else if (current.node < self.node_count) {
                     // In order traversal of the children on the right (1-bit).
