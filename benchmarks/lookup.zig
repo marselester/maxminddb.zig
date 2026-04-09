@@ -15,19 +15,14 @@ pub fn main() !void {
     var db_path: []const u8 = default_db_path;
     var num_lookups = default_num_lookups;
     var fields: ?[]const []const u8 = null;
+    var index_bits: u8 = 16;
     if (args.len > 1) db_path = args[1];
     if (args.len > 2) num_lookups = try std.fmt.parseUnsigned(u64, args[2], 10);
     if (args.len > 3) {
-        var items: [max_mmdb_fields][]const u8 = undefined;
-
-        var it = std.mem.splitScalar(u8, args[3], ',');
-        var i: usize = 0;
-        while (it.next()) |part| : (i += 1) {
-            items[i] = part;
-        }
-
-        fields = items[0..i];
+        const f = try maxminddb.Fields(max_mmdb_fields).parse(args[3], ',');
+        fields = f.only();
     }
+    if (args.len > 4) index_bits = try std.fmt.parseUnsigned(u8, args[4], 10);
 
     std.debug.print("Benchmarking with:\n", .{});
     std.debug.print("  Database: {s}\n", .{db_path});
@@ -35,7 +30,7 @@ pub fn main() !void {
     std.debug.print("Opening database...\n", .{});
 
     var open_timer = try std.time.Timer.start();
-    var db = try maxminddb.Reader.mmap(allocator, db_path, .{ .ipv4_index_first_n_bits = 16 });
+    var db = try maxminddb.Reader.mmap(allocator, db_path, .{ .ipv4_index_first_n_bits = index_bits });
     defer db.close();
     const open_time_ms = @as(f64, @floatFromInt(open_timer.read())) /
         @as(f64, @floatFromInt(std.time.ns_per_ms));

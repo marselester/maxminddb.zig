@@ -18,15 +18,8 @@ pub fn main() !void {
     if (args.len > 1) db_path = args[1];
     if (args.len > 2) num_lookups = try std.fmt.parseUnsigned(u64, args[2], 10);
     if (args.len > 3) {
-        var items: [max_mmdb_fields][]const u8 = undefined;
-
-        var it = std.mem.splitScalar(u8, args[3], ',');
-        var i: usize = 0;
-        while (it.next()) |part| : (i += 1) {
-            items[i] = part;
-        }
-
-        fields = items[0..i];
+        const f = try maxminddb.Fields(max_mmdb_fields).parse(args[3], ',');
+        fields = f.only();
     }
 
     std.debug.print("Benchmarking with:\n", .{});

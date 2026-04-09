@@ -29,6 +29,12 @@ pub fn Fields(comptime capacity: usize) type {
             errdefer allocator.free(buf);
 
             var f = try parse(buf, sep);
+            // Don't keep the buffer if no fields were parsed, e.g., empty string.
+            if (f.len == 0) {
+                allocator.free(buf);
+                return .{};
+            }
+
             f.buf = buf;
 
             return f;
@@ -107,6 +113,22 @@ test "append trims whitespace-only to no-op" {
     try f.append("\t");
     try f.append("\n");
     try std.testing.expectEqual(null, f.only());
+}
+
+test "parseAlloc empty string does not allocate" {
+    var f = try Fields(4).parseAlloc(std.testing.allocator, "", ',');
+    defer f.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(null, f.only());
+    try std.testing.expectEqual(null, f.buf);
+}
+
+test "parseAlloc whitespace-only does not allocate" {
+    var f = try Fields(4).parseAlloc(std.testing.allocator, "  ,  ,  ", ',');
+    defer f.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(null, f.only());
+    try std.testing.expectEqual(null, f.buf);
 }
 
 test "parseAlloc frees buffer on TooManyFields" {

@@ -17,15 +17,8 @@ pub fn main() !void {
     if (args.len > 1) db_path = args[1];
     if (args.len > 2) num_lookups = try std.fmt.parseUnsigned(u64, args[2], 10);
     if (args.len > 3) {
-        var items: [max_mmdb_fields][]const u8 = undefined;
-
-        var it = std.mem.splitScalar(u8, args[3], ',');
-        var i: usize = 0;
-        while (it.next()) |part| : (i += 1) {
-            items[i] = part;
-        }
-
-        fields = items[0..i];
+        const f = try maxminddb.Fields(max_mmdb_fields).parse(args[3], ',');
+        fields = f.only();
     }
 
     std.debug.print("Benchmarking with:\n", .{});
@@ -56,20 +49,20 @@ pub fn main() !void {
         std.crypto.random.bytes(&ip_bytes);
         const ip = std.net.Address.initIp4(ip_bytes, 0);
 
-        const result = db.lookupWithCache(
-            maxminddb.geolite2.City,
-            &cache,
-            ip,
-            .{ .only = fields },
-        ) catch |err| {
+        const entry = db.find(ip, .{}) catch |err| {
             std.debug.print("! Lookup error for IP {any}: {any}\n", .{ ip, err });
             lookup_errors += 1;
             continue;
         };
-        if (result == null) {
+        if (entry == null) {
             not_found_count += 1;
             continue;
         }
+        _ = cache.decode(&db, entry.?, .{ .only = fields }) catch |err| {
+            std.debug.print("! Decode error for IP {any}: {any}\n", .{ ip, err });
+            lookup_errors += 1;
+            continue;
+        };
     }
 
     const elapsed_ns = timer.read();

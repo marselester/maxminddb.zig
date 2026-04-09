@@ -12,9 +12,9 @@ pub const geoip2 = @import("geoip2.zig");
 
 pub const Error = reader.ReadError || decoder.DecodeError;
 pub const Reader = reader.Reader;
-pub const Result = reader.Result;
 pub const Metadata = reader.Metadata;
-pub const Iterator = reader.Iterator;
+pub const ResultIterator = reader.ResultIterator;
+pub const EntryIterator = reader.EntryIterator;
 pub const Cache = reader.Cache;
 pub const Network = net.Network;
 pub const Map = collection.Map;
@@ -108,21 +108,105 @@ fn expectEqualMaps(
     keys: []const []const u8,
     values: []const []const u8,
 ) !void {
-    try std.testing.expectEqual(map.entries.len, keys.len);
+    try expectEqual(map.entries.len, keys.len);
 
     for (keys, values) |key, want_value| {
         const got_value = map.get(key) orelse {
             std.debug.print("map key=\"{s}\" was not found\n", .{key});
             return error.MapKeyNotFound;
         };
-        try std.testing.expectEqualStrings(want_value, got_value);
+        try expectEqualStrings(want_value, got_value);
     }
 }
 
 const allocator = std.testing.allocator;
+const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const expectEqualDeep = std.testing.expectEqualDeep;
+const expectError = std.testing.expectError;
+
+test "Metadata.decodeAs any.Value" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const meta = try Metadata.decodeAs(any.Value, arena.allocator(), db.src);
+    try expectEqualStrings("GeoLite2-City", meta.get("database_type").?.string);
+    try expectEqual(@as(u16, 6), meta.get("ip_version").?.uint16);
+    try expectEqual(@as(u16, 2), meta.get("binary_format_major_version").?.uint16);
+}
+
+test "reject invalid metadata" {
+    try expectError(error.MetadataStartNotFound, Metadata.decode(allocator, "not a valid mmdb"));
+}
+
+test "Reader.open" {
+    var db = try Reader.open(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    const ip = try std.net.Address.parseIp("89.160.20.128", 0);
+    const got = (try db.lookup(geolite2.City, allocator, ip, .{})).?;
+    defer got.deinit();
+
+    try expectEqualStrings("SE", got.value.country.iso_code);
+}
+
+test "reject index bits > 24" {
+    try expectError(error.InvalidPrefixLen, Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{ .ipv4_index_first_n_bits = 25 },
+    ));
+}
+
+test "reject invalid prefix length" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    try expectError(error.InvalidPrefixLen, db.entries(.{
+        .ip = try std.net.Address.parseIp("0.0.0.0", 0),
+        .prefix_len = 33,
+    }, .{}));
+}
+
+test "reject invalid node count" {
+    try expectError(
+        error.CorruptedTree,
+        Reader.mmap(allocator, "test-data/test-data/GeoIP2-City-Test-Invalid-Node-Count.mmdb", .{}),
+    );
+}
+
+test "reject IPv6 on IPv4-only database" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/MaxMind-DB-test-ipv4-32.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    const network = try net.Network.parse("::/0");
+    const it = db.scan(any.Value, allocator, network, .{});
+    try expectError(error.IPv6AddressInIPv4Database, it);
+
+    const ip = try std.net.Address.parseIp("2001:db8::1", 0);
+    const result = db.lookup(any.Value, allocator, ip, .{});
+    try expectError(error.IPv6AddressInIPv4Database, result);
+}
 
 test DatabaseType {
     var db_type = DatabaseType.new("unknown db type!");
@@ -893,7 +977,7 @@ test "lookup with any.Value and field name filtering" {
     try expectEqual(null, got.value.get("location"));
 }
 
-test "decodeMetadata as any.Value" {
+test "IPv4 index matches non-indexed find" {
     var db = try Reader.mmap(
         allocator,
         "test-data/test-data/GeoLite2-City-Test.mmdb",
@@ -901,13 +985,33 @@ test "decodeMetadata as any.Value" {
     );
     defer db.close();
 
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
+    var db_idx = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{ .ipv4_index_first_n_bits = 16 },
+    );
+    defer db_idx.close();
 
-    const meta = try Reader.decodeMetadata(any.Value, arena.allocator(), db.src);
-    try expectEqualStrings("GeoLite2-City", meta.get("database_type").?.string);
-    try expectEqual(@as(u16, 6), meta.get("ip_version").?.uint16);
-    try expectEqual(@as(u16, 2), meta.get("binary_format_major_version").?.uint16);
+    for ([_][]const u8{
+        "89.160.20.128",
+        "175.16.199.0",
+        "216.160.83.56",
+        "2001:218::",
+        "0.0.0.0",
+        "255.255.255.255",
+    }) |ip_str| {
+        const ip = try std.net.Address.parseIp(ip_str, 0);
+        const entry1 = try db.find(ip, .{});
+        const entry2 = try db_idx.find(ip, .{});
+
+        if (entry1) |e1| {
+            const e2 = entry2.?;
+            try expectEqual(e1.pointer, e2.pointer);
+            try expectEqual(e1.network.prefix_len, e2.network.prefix_len);
+        } else {
+            try expect(entry2 == null);
+        }
+    }
 }
 
 test "scan returns all networks" {
@@ -978,21 +1082,21 @@ test "scan yields record when start node is a data pointer" {
     }
 }
 
-test "reject IPv6 on IPv4-only database" {
+test "find skips empty records by default" {
     var db = try Reader.mmap(
         allocator,
-        "test-data/test-data/MaxMind-DB-test-ipv4-32.mmdb",
+        "test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb",
         .{},
     );
     defer db.close();
 
-    const network = try net.Network.parse("::/0");
-    const it = db.scan(any.Value, allocator, network, .{});
-    try std.testing.expectError(error.IPv6AddressInIPv4Database, it);
+    // 1.0.0.1 is in the db but its record is empty.
+    const ip = try std.net.Address.parseIp("1.0.0.1", 0);
 
-    const ip = try std.net.Address.parseIp("2001:db8::1", 0);
-    const result = db.lookup(any.Value, allocator, ip, .{});
-    try std.testing.expectError(error.IPv6AddressInIPv4Database, result);
+    // Empty records are skipped by default.
+    try expect(try db.find(ip, .{}) == null);
+
+    try expect((try db.find(ip, .{ .include_empty_values = true })) != null);
 }
 
 test "scan skips empty records" {
@@ -1013,7 +1117,7 @@ test "scan skips empty records" {
         while (try it.next()) |item| : (n += 1) {
             item.deinit();
         }
-        try std.testing.expectEqual(571, n);
+        try expectEqual(571, n);
     }
 
     // Only non-empty records.
@@ -1026,6 +1130,111 @@ test "scan skips empty records" {
         while (try it.next()) |item| : (n += 1) {
             item.deinit();
         }
-        try std.testing.expectEqual(8, n);
+        try expectEqual(8, n);
     }
+}
+
+test "cache hit returns same value" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    var cache = try Cache(geolite2.City).init(allocator, .{ .size = 4 });
+    defer cache.deinit();
+
+    const ip = try std.net.Address.parseIp("89.160.20.128", 0);
+    const entry = (try db.find(ip, .{})).?;
+
+    // Cache miss, decodes.
+    const v1 = try cache.decode(&db, entry, .{});
+    try expectEqualStrings("SE", v1.country.iso_code);
+
+    // Cache hit, same pointer.
+    const v2 = try cache.decode(&db, entry, .{});
+    try expectEqualStrings("SE", v2.country.iso_code);
+
+    const v3 = cache.get(entry.pointer).?;
+    try expectEqualStrings("SE", v3.country.iso_code);
+}
+
+test "cache eviction" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    // Size 1: every new entry evicts the previous one.
+    var cache = try Cache(geolite2.City).init(allocator, .{ .size = 1 });
+    defer cache.deinit();
+
+    const ip1 = try std.net.Address.parseIp("89.160.20.128", 0);
+    const entry1 = (try db.find(ip1, .{})).?;
+    _ = try cache.decode(&db, entry1, .{});
+    try expect(cache.get(entry1.pointer) != null);
+
+    const ip2 = try std.net.Address.parseIp("2001:218::", 0);
+    const entry2 = (try db.find(ip2, .{})).?;
+    _ = try cache.decode(&db, entry2, .{});
+
+    // entry1 is evicted.
+    try expect(cache.get(entry1.pointer) == null);
+    try expect(cache.get(entry2.pointer) != null);
+}
+
+test "cache ring buffer wrap-around" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    var cache = try Cache(geolite2.City).init(allocator, .{ .size = 2 });
+    defer cache.deinit();
+
+    const ip1 = try std.net.Address.parseIp("89.160.20.128", 0);
+    const ip2 = try std.net.Address.parseIp("2001:218::", 0);
+    const ip3 = try std.net.Address.parseIp("216.160.83.56", 0);
+
+    const entry1 = (try db.find(ip1, .{})).?;
+    const entry2 = (try db.find(ip2, .{})).?;
+    const entry3 = (try db.find(ip3, .{})).?;
+
+    _ = try cache.decode(&db, entry1, .{});
+    _ = try cache.decode(&db, entry2, .{});
+    // Cache is full now, so the next insert evicts entry1.
+    _ = try cache.decode(&db, entry3, .{});
+
+    try expect(cache.get(entry1.pointer) == null);
+    try expect(cache.get(entry2.pointer) != null);
+    try expect(cache.get(entry3.pointer) != null);
+}
+
+test "cache decode with field filtering" {
+    var db = try Reader.mmap(
+        allocator,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    var cache = try Cache(geolite2.City).init(allocator, .{ .size = 4 });
+    defer cache.deinit();
+
+    const ip = try std.net.Address.parseIp("89.160.20.128", 0);
+    const entry = (try db.find(ip, .{})).?;
+
+    const v = try cache.decode(&db, entry, .{ .only = &.{"city"} });
+    try expectEqualStrings("Linköping", v.city.names.?.get("en").?);
+    // Country was not decoded.
+    try expectEqualStrings("", v.country.iso_code);
+}
+
+test "cache rejects size 0" {
+    try expectError(error.InvalidCacheSize, Cache(geolite2.City).init(allocator, .{ .size = 0 }));
 }
