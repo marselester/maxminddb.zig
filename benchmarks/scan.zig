@@ -2,6 +2,7 @@ const std = @import("std");
 const maxminddb = @import("maxminddb");
 
 const default_db_path: []const u8 = "GeoLite2-City.mmdb";
+const max_mmdb_fields = 32;
 
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
@@ -10,7 +11,12 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     var db_path: []const u8 = default_db_path;
+    var fields: ?[]const []const u8 = null;
     if (args.len > 1) db_path = args[1];
+    if (args.len > 2) {
+        const f = try maxminddb.Fields(max_mmdb_fields).parse(args[2], ',');
+        fields = f.only();
+    }
 
     std.debug.print("Benchmarking with:\n", .{});
     std.debug.print("  Database: {s}\n", .{db_path});
@@ -34,7 +40,7 @@ pub fn main() !void {
     std.debug.print("Starting benchmark...\n", .{});
     var timer = try std.time.Timer.start();
 
-    var it = try db.scan(maxminddb.any.Value, allocator, network, .{});
+    var it = try db.scan(maxminddb.any.Value, allocator, network, .{ .only = fields });
 
     var n: usize = 0;
     while (try it.next()) |item| {
