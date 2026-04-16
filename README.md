@@ -52,7 +52,7 @@ It returns `Result` or null when the IP is not found or the record is empty.
 Each result owns an arena so you should call `result.deinit()` to free it.
 
 ```zig
-var db = try maxminddb.Reader.mmap(allocator, db_path, .{});
+var db = try maxminddb.Reader.mmap(allocator, io, db_path, .{});
 defer db.close();
 
 if (try db.lookup(maxminddb.geolite2.City, allocator, ip, .{})) |result| {
@@ -134,7 +134,7 @@ and uses ~320KB at depth 16, or 12 (~20KB) for constrained devices.
 It's not worth creating an index for short-lived readers.
 
 ```zig
-var db = try maxminddb.Reader.mmap(allocator, db_path, .{ .ipv4_index_first_n_bits = 16 });
+var db = try maxminddb.Reader.mmap(allocator, io, db_path, .{ .ipv4_index_first_n_bits = 16 });
 defer db.close();
 ```
 

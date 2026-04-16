@@ -5,19 +5,19 @@ const default_db_path: []const u8 = "GeoLite2-City.mmdb";
 const default_num_lookups: u64 = 1_000_000;
 const max_mmdb_fields = 32;
 
-pub fn main() !void {
-    const allocator = std.heap.smp_allocator;
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var db_path: []const u8 = default_db_path;
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args.deinit();
+    _ = args.skip();
+    const db_path = args.next() orelse default_db_path;
     var num_lookups = default_num_lookups;
     var fields: ?[]const []const u8 = null;
-    if (args.len > 1) db_path = args[1];
-    if (args.len > 2) num_lookups = try std.fmt.parseUnsigned(u64, args[2], 10);
-    if (args.len > 3) {
-        const f = try maxminddb.Fields(max_mmdb_fields).parse(args[3], ',');
+    if (args.next()) |arg| num_lookups = try std.fmt.parseUnsigned(u64, arg, 10);
+    if (args.next()) |arg| {
+        const f = try maxminddb.Fields(max_mmdb_fields).parse(arg, ',');
         fields = f.only();
     }
 
@@ -26,10 +26,11 @@ pub fn main() !void {
     std.debug.print("  Lookups:  {d}\n", .{num_lookups});
     std.debug.print("Opening database...\n", .{});
 
-    var open_timer = try std.time.Timer.start();
-    var db = try maxminddb.Reader.mmap(allocator, db_path, .{ .ipv4_index_first_n_bits = 16 });
+    const open_start = std.Io.Clock.Timestamp.now(io, .awake);
+    var db = try maxminddb.Reader.mmap(allocator, io, db_path, .{ .ipv4_index_first_n_bits = 16 });
     defer db.close();
-    const open_time_ms = @as(f64, @floatFromInt(open_timer.read())) /
+    const open_elapsed_ns: i64 = @intCast(open_start.untilNow(io).raw.nanoseconds);
+    const open_time_ms = @as(f64, @floatFromInt(open_elapsed_ns)) /
         @as(f64, @floatFromInt(std.time.ns_per_ms));
     std.debug.print("Database opened successfully in {d} ms. Type: {s}\n", .{
         open_time_ms,
@@ -40,14 +41,14 @@ pub fn main() !void {
     defer cache.deinit();
 
     std.debug.print("Starting benchmark...\n", .{});
-    var timer = try std.time.Timer.start();
+    const timer_start = std.Io.Clock.Timestamp.now(io, .awake);
     var not_found_count: u64 = 0;
     var lookup_errors: u64 = 0;
     var ip_bytes: [4]u8 = undefined;
 
     for (0..num_lookups) |_| {
-        std.crypto.random.bytes(&ip_bytes);
-        const ip = std.net.Address.initIp4(ip_bytes, 0);
+        io.random(&ip_bytes);
+        const ip: std.Io.net.IpAddress = .{ .ip4 = .{ .bytes = ip_bytes, .port = 0 } };
 
         const entry = db.find(ip, .{}) catch |err| {
             std.debug.print("! Lookup error for IP {any}: {any}\n", .{ ip, err });
@@ -65,7 +66,7 @@ pub fn main() !void {
         };
     }
 
-    const elapsed_ns = timer.read();
+    const elapsed_ns: i64 = @intCast(timer_start.untilNow(io).raw.nanoseconds);
     const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) /
         @as(f64, @floatFromInt(std.time.ns_per_s));
     const lookups_per_second = if (elapsed_s > 0)

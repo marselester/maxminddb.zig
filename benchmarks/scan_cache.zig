@@ -4,17 +4,17 @@ const maxminddb = @import("maxminddb");
 const default_db_path: []const u8 = "GeoLite2-City.mmdb";
 const max_mmdb_fields = 32;
 
-pub fn main() !void {
-    const allocator = std.heap.smp_allocator;
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var db_path: []const u8 = default_db_path;
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args.deinit();
+    _ = args.skip();
+    const db_path = args.next() orelse default_db_path;
     var fields: ?[]const []const u8 = null;
-    if (args.len > 1) db_path = args[1];
-    if (args.len > 2) {
-        const f = try maxminddb.Fields(max_mmdb_fields).parse(args[2], ',');
+    if (args.next()) |arg| {
+        const f = try maxminddb.Fields(max_mmdb_fields).parse(arg, ',');
         fields = f.only();
     }
 
@@ -22,10 +22,11 @@ pub fn main() !void {
     std.debug.print("  Database: {s}\n", .{db_path});
     std.debug.print("Opening database...\n", .{});
 
-    var open_timer = try std.time.Timer.start();
-    var db = try maxminddb.Reader.mmap(allocator, db_path, .{});
+    const open_start = std.Io.Clock.Timestamp.now(io, .awake);
+    var db = try maxminddb.Reader.mmap(allocator, io, db_path, .{});
     defer db.close();
-    const open_time_ms = @as(f64, @floatFromInt(open_timer.read())) /
+    const open_elapsed_ns: i64 = @intCast(open_start.untilNow(io).raw.nanoseconds);
+    const open_time_ms = @as(f64, @floatFromInt(open_elapsed_ns)) /
         @as(f64, @floatFromInt(std.time.ns_per_ms));
     std.debug.print("Database opened successfully in {d} ms. Type: {s}\n", .{
         open_time_ms,
@@ -41,7 +42,7 @@ pub fn main() !void {
     defer cache.deinit();
 
     std.debug.print("Starting benchmark...\n", .{});
-    var timer = try std.time.Timer.start();
+    const timer_start = std.Io.Clock.Timestamp.now(io, .awake);
 
     var it = try db.entries(network, .{});
 
@@ -51,7 +52,7 @@ pub fn main() !void {
         n += 1;
     }
 
-    const elapsed_ns = timer.read();
+    const elapsed_ns: i64 = @intCast(timer_start.untilNow(io).raw.nanoseconds);
     const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) /
         @as(f64, @floatFromInt(std.time.ns_per_s));
 

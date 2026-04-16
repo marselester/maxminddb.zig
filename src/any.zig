@@ -88,7 +88,7 @@ pub const Value = union(enum) {
 fn expectJSON(expected: []const u8, v: Value) !void {
     var out: [4096]u8 = undefined;
 
-    var w = std.io.Writer.fixed(&out);
+    var w = std.Io.Writer.fixed(&out);
     try v.format(&w);
     try std.testing.expectEqualStrings(expected, out[0..w.end]);
 }
