@@ -36,14 +36,29 @@ pub const Value = union(enum) {
         }
     }
 
-    /// Formats the Value as JSON using a writer (unbounded output).
-    /// Strings are not escaped.
+    // Checks if a string contains bytes that must be escaped in JSON:
+    // control characters (0x00-0x1F), double quote, or backslash.
+    fn jsonStringNeedsEscape(s: []const u8) bool {
+        for (s) |c| {
+            if (c < 0x20 or c == '"' or c == '\\') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// Formats the Value as JSON using a writer.
     pub fn format(self: Value, writer: anytype) !void {
         switch (self) {
             .string => |s| {
-                try writer.writeByte('"');
-                try writer.writeAll(s);
-                try writer.writeByte('"');
+                if (!jsonStringNeedsEscape(s)) {
+                    try writer.writeByte('"');
+                    try writer.writeAll(s);
+                    try writer.writeByte('"');
+                } else {
+                    try std.json.Stringify.encodeJsonString(s, .{}, writer);
+                }
             },
             .int32 => |v| try writer.print("{}", .{v}),
             .uint16, .uint32, .uint64 => |v| try writer.print("{}", .{v}),
@@ -72,6 +87,7 @@ pub const Value = union(enum) {
                         try writer.writeByte(',');
                     }
 
+                    // No need to escape field names, e.g., "city", "names",
                     try writer.writeByte('"');
                     try writer.writeAll(entry.key);
                     try writer.writeByte('"');
@@ -105,6 +121,18 @@ test "encode scalars" {
         .{
             .value = .{ .string = "" },
             .want = "\"\"",
+        },
+        .{
+            .value = .{ .string = "\"VOLZ\" LLC" },
+            .want = "\"\\\"VOLZ\\\" LLC\"",
+        },
+        .{
+            .value = .{ .string = "back\\slash" },
+            .want = "\"back\\\\slash\"",
+        },
+        .{
+            .value = .{ .string = "line\nnewline" },
+            .want = "\"line\\nnewline\"",
         },
         .{
             .value = .{ .int32 = 0 },
