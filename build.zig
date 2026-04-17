@@ -48,10 +48,11 @@ pub fn build(b: *std.Build) void {
                 }),
             });
             exe.root_module.addImport("maxminddb", maxminddb_module);
-            b.installArtifact(exe);
+
+            const install = b.addInstallArtifact(exe, .{});
 
             const run_cmd = b.addRunArtifact(exe);
-            run_cmd.step.dependOn(b.getInstallStep());
+            run_cmd.step.dependOn(&install.step);
             if (b.args) |args| {
                 run_cmd.addArgs(args);
             }

@@ -2,7 +2,6 @@ const std = @import("std");
 
 const decoder = @import("decoder.zig");
 const collection = @import("collection.zig");
-const memorymap = @import("mmap.zig");
 const net = @import("net.zig");
 
 pub const ReadError = error{
@@ -53,7 +52,7 @@ pub const Metadata = struct {
     }
 
     fn findMetadataStart(src: []const u8) !usize {
-        var metadata_start = std.mem.lastIndexOf(u8, src, start_marker) orelse {
+        var metadata_start = std.mem.findLast(u8, src, start_marker) orelse {
             return ReadError.MetadataStartNotFound;
         };
         metadata_start += start_marker.len;
@@ -88,7 +87,8 @@ pub const Reader = struct {
     // This lets us return the correct prefix length
     // without re-traversing the tree for terminal nodes in the index.
     ipv4_index_prefix_len: ?[]u8,
-    is_mapped: bool,
+    memory_map: ?std.Io.File.MemoryMap,
+    io: std.Io,
     arena: *std.heap.ArenaAllocator,
 
     pub const Options = struct {
@@ -154,7 +154,12 @@ pub const Reader = struct {
         };
     }
 
-    fn init(arena: *std.heap.ArenaAllocator, src: []const u8, options: Options) !Reader {
+    fn init(
+        arena: *std.heap.ArenaAllocator,
+        io: std.Io,
+        src: []const u8,
+        options: Options,
+    ) !Reader {
         const metadata = try Metadata.decode(arena.allocator(), src);
 
         switch (metadata.record_size) {
@@ -180,7 +185,8 @@ pub const Reader = struct {
             .ipv4_index_first_n_bits = options.ipv4_index_first_n_bits,
             .ipv4_index = null,
             .ipv4_index_prefix_len = null,
-            .is_mapped = false,
+            .memory_map = null,
+            .io = io,
             .arena = arena,
         };
 
@@ -194,10 +200,12 @@ pub const Reader = struct {
     }
 
     /// Loads a MaxMind DB file into memory.
-    pub fn open(allocator: std.mem.Allocator, path: []const u8, options: Options) !Reader {
-        var f = try std.fs.cwd().openFile(path, .{});
-        defer f.close();
-
+    pub fn open(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        path: []const u8,
+        options: Options,
+    ) !Reader {
         const arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer {
             arena.deinit();
@@ -205,15 +213,39 @@ pub const Reader = struct {
         }
         arena.* = std.heap.ArenaAllocator.init(allocator);
 
-        const src = try f.readToEndAlloc(arena.allocator(), max_db_size);
+        const src = try std.Io.Dir.cwd().readFileAlloc(
+            io,
+            path,
+            arena.allocator(),
+            .limited(max_db_size),
+        );
 
-        return try init(arena, src, options);
+        return try init(arena, io, src, options);
     }
 
     /// Maps a MaxMind DB file into memory.
-    pub fn mmap(allocator: std.mem.Allocator, path: []const u8, options: Options) !Reader {
-        const src = try memorymap.map(path);
-        errdefer memorymap.unmap(src);
+    pub fn mmap(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        path: []const u8,
+        options: Options,
+    ) !Reader {
+        var f = try std.Io.Dir.cwd().openFile(io, path, .{});
+        defer f.close(io);
+
+        const file_size: usize = @intCast(try f.length(io));
+        if (file_size == 0) {
+            return error.FileEmpty;
+        }
+
+        var mm = try f.createMemoryMap(
+            io,
+            .{
+                .len = file_size,
+                .protection = .{ .read = true },
+            },
+        );
+        errdefer mm.destroy(io);
 
         const arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer {
@@ -222,8 +254,8 @@ pub const Reader = struct {
         }
         arena.* = std.heap.ArenaAllocator.init(allocator);
 
-        var r = try init(arena, src, options);
-        r.is_mapped = true;
+        var r = try init(arena, io, mm.memory, options);
+        r.memory_map = mm;
 
         return r;
     }
@@ -236,8 +268,8 @@ pub const Reader = struct {
         self.arena.deinit();
         allocator.destroy(self.arena);
 
-        if (self.is_mapped) {
-            memorymap.unmap(self.src);
+        if (self.memory_map) |*mm| {
+            mm.destroy(self.io);
         }
     }
 
@@ -249,7 +281,7 @@ pub const Reader = struct {
         self: *Reader,
         T: type,
         allocator: std.mem.Allocator,
-        address: std.net.Address,
+        address: std.Io.net.IpAddress,
         options: QueryOptions,
     ) !?Result(T) {
         const entry = try self.find(
@@ -264,7 +296,7 @@ pub const Reader = struct {
     /// Returns null if the IP address is not found or the record is empty.
     /// Empty records are skipped by default.
     /// Use include_empty_values = true to return them.
-    pub fn find(self: *Reader, address: std.net.Address, options: EntryOptions) !?Entry {
+    pub fn find(self: *Reader, address: std.Io.net.IpAddress, options: EntryOptions) !?Entry {
         const ip = net.IP.init(address);
         if (ip.bitCount() == 128 and self.metadata.ip_version == 4) {
             return ReadError.IPv6AddressInIPv4Database;

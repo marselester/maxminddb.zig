@@ -3,12 +3,11 @@ const maxminddb = @import("maxminddb");
 
 const db_path = "test-data/test-data/GeoLite2-City-Test.mmdb";
 
-pub fn main() !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    const allocator = gpa.allocator();
-    defer _ = gpa.detectLeaks();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    var db = try maxminddb.Reader.mmap(allocator, db_path, .{});
+    var db = try maxminddb.Reader.mmap(allocator, io, db_path, .{});
     defer db.close();
 
     const network = if (db.metadata.ip_version == 4)

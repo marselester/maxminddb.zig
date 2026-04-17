@@ -2,20 +2,20 @@ const std = @import("std");
 
 // Represents an IP network.
 pub const Network = struct {
-    ip: std.net.Address,
+    ip: std.Io.net.IpAddress,
     prefix_len: usize = 0,
 
     pub const all_ipv4 = Network{
-        .ip = std.net.Address.parseIp("0.0.0.0", 0) catch unreachable,
+        .ip = std.Io.net.IpAddress.parse("0.0.0.0", 0) catch unreachable,
     };
     pub const all_ipv6 = Network{
-        .ip = std.net.Address.parseIp("::", 0) catch unreachable,
+        .ip = std.Io.net.IpAddress.parse("::", 0) catch unreachable,
     };
 
     // Parses an IP address or CIDR string like "1.0.0.0/24".
     pub fn parse(s: []const u8) !Network {
-        if (std.mem.indexOfScalar(u8, s, '/')) |sep| {
-            const ip = try std.net.Address.parseIp(s[0..sep], 0);
+        if (std.mem.findScalar(u8, s, '/')) |sep| {
+            const ip = try std.Io.net.IpAddress.parse(s[0..sep], 0);
             const prefix_len = try std.fmt.parseInt(usize, s[sep + 1 ..], 10);
             return .{
                 .ip = ip,
@@ -23,21 +23,20 @@ pub const Network = struct {
             };
         }
 
-        const ip = try std.net.Address.parseIp(s, 0);
+        const ip = try std.Io.net.IpAddress.parse(s, 0);
         return .{
             .ip = ip,
-            .prefix_len = switch (ip.any.family) {
-                std.posix.AF.INET => 32,
-                std.posix.AF.INET6 => 128,
-                else => unreachable,
+            .prefix_len = switch (ip) {
+                .ip4 => 32,
+                .ip6 => 128,
             },
         };
     }
 
     pub fn format(self: Network, writer: anytype) !void {
-        switch (self.ip.any.family) {
-            std.posix.AF.INET => {
-                const b: *const [4]u8 = @ptrCast(&self.ip.in.sa.addr);
+        switch (self.ip) {
+            .ip4 => |v| {
+                const b = v.bytes;
                 try writer.print(
                     "{}.{}.{}.{}/{}",
                     .{
@@ -49,8 +48,8 @@ pub const Network = struct {
                     },
                 );
             },
-            std.posix.AF.INET6 => {
-                const b = self.ip.in6.sa.addr;
+            .ip6 => |v| {
+                const b = v.bytes;
                 try writer.print(
                     "{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}/{}",
                     .{
@@ -66,7 +65,6 @@ pub const Network = struct {
                     },
                 );
             },
-            else => unreachable,
         }
     }
 };
@@ -89,7 +87,7 @@ test "Network.format" {
     var buf: [128]u8 = undefined;
     for (tests) |tc| {
         const addr = Network{
-            .ip = try std.net.Address.parseIp(tc.addr, 0),
+            .ip = try std.Io.net.IpAddress.parse(tc.addr, 0),
             .prefix_len = 64,
         };
         const got = try std.fmt.bufPrint(&buf, "{f}", .{addr});
@@ -120,15 +118,10 @@ pub const IP = union(enum) {
     v4: [4]u8,
     v6: [16]u8,
 
-    pub fn init(addr: std.net.Address) IP {
-        return switch (addr.any.family) {
-            std.posix.AF.INET => .{
-                .v4 = std.mem.asBytes(&addr.in.sa.addr).*,
-            },
-            std.posix.AF.INET6 => .{
-                .v6 = addr.in6.sa.addr,
-            },
-            else => unreachable,
+    pub fn init(addr: std.Io.net.IpAddress) IP {
+        return switch (addr) {
+            .ip4 => |v| .{ .v4 = v.bytes },
+            .ip6 => |v| .{ .v6 = v.bytes },
         };
     }
 
@@ -184,20 +177,20 @@ pub const IP = union(enum) {
     pub fn network(self: IP, prefix_len: usize) Network {
         return switch (self) {
             .v4 => |b| .{
-                .ip = std.net.Address.initIp4(b, 0),
+                .ip = .{ .ip4 = .{ .bytes = b, .port = 0 } },
                 .prefix_len = prefix_len,
             },
             .v6 => |b| {
                 // IPv4 in IPv6 form.
                 if (std.mem.allEqual(u8, b[0..12], 0) and prefix_len >= 96) {
                     return .{
-                        .ip = std.net.Address.initIp4(b[12..16].*, 0),
+                        .ip = .{ .ip4 = .{ .bytes = b[12..16].*, .port = 0 } },
                         .prefix_len = prefix_len - 96,
                     };
                 }
 
                 return .{
-                    .ip = std.net.Address.initIp6(b, 0, 0, 0),
+                    .ip = .{ .ip6 = .{ .bytes = b, .port = 0 } },
                     .prefix_len = prefix_len,
                 };
             },
@@ -268,7 +261,7 @@ test "IP.mask" {
 
     var buf: [64]u8 = undefined;
     for (tests) |tc| {
-        const ip = IP.init(try std.net.Address.parseIp(tc.addr, 0));
+        const ip = IP.init(try std.Io.net.IpAddress.parse(tc.addr, 0));
         const masked = ip.mask(tc.prefix_len).network(tc.prefix_len);
         const got = try std.fmt.bufPrint(&buf, "{f}", .{masked});
 

@@ -15,10 +15,23 @@ jobs:
           - os: windows-latest
 
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v6
+      # The zig 0.16 aarch64-windows binary and LLVM libs are broken,
+      # see https://codeberg.org/ziglang/zig/issues/31865.
+      # As a workaround x86_64 Zig is used via Windows ARM emulation.
       - uses: mlugg/setup-zig@v2
+        if: matrix.os != 'windows-11-arm'
+      - name: Setup Zig
+        if: matrix.os == 'windows-11-arm'
+        run: |
+          curl -fsSLo zig.zip https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip
+          unzip -q zig.zip -d zig-sdk
+          echo "$PWD/zig-sdk/zig-x86_64-windows-0.16.0" >> $GITHUB_PATH
       - name: Fetch test-data
         run: git submodule update --init
       - name: Run tests
