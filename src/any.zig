@@ -36,14 +36,11 @@ pub const Value = union(enum) {
         }
     }
 
-    /// Formats the Value as JSON using a writer (unbounded output).
-    /// Strings are not escaped.
+    /// Formats the Value as JSON using a writer.
     pub fn format(self: Value, writer: anytype) !void {
         switch (self) {
             .string => |s| {
-                try writer.writeByte('"');
-                try writer.writeAll(s);
-                try writer.writeByte('"');
+                try std.json.Stringify.encodeJsonString(s, .{}, writer);
             },
             .int32 => |v| try writer.print("{}", .{v}),
             .uint16, .uint32, .uint64 => |v| try writer.print("{}", .{v}),
@@ -72,9 +69,7 @@ pub const Value = union(enum) {
                         try writer.writeByte(',');
                     }
 
-                    try writer.writeByte('"');
-                    try writer.writeAll(entry.key);
-                    try writer.writeByte('"');
+                    try std.json.Stringify.encodeJsonString(entry.key, .{}, writer);
                     try writer.writeByte(':');
                     try entry.value.format(writer);
                 }
@@ -105,6 +100,18 @@ test "encode scalars" {
         .{
             .value = .{ .string = "" },
             .want = "\"\"",
+        },
+        .{
+            .value = .{ .string = "\"VOLZ\" LLC" },
+            .want = "\"\\\"VOLZ\\\" LLC\"",
+        },
+        .{
+            .value = .{ .string = "back\\slash" },
+            .want = "\"back\\\\slash\"",
+        },
+        .{
+            .value = .{ .string = "line\nnewline" },
+            .want = "\"line\\nnewline\"",
         },
         .{
             .value = .{ .int32 = 0 },
