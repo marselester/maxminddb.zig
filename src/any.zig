@@ -36,11 +36,29 @@ pub const Value = union(enum) {
         }
     }
 
+    // Checks if a string contains bytes that must be escaped in JSON:
+    // control characters (0x00-0x1F), double quote, or backslash.
+    fn jsonStringNeedsEscape(s: []const u8) bool {
+        for (s) |c| {
+            if (c < 0x20 or c == '"' or c == '\\') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// Formats the Value as JSON using a writer.
     pub fn format(self: Value, writer: anytype) !void {
         switch (self) {
             .string => |s| {
-                try std.json.Stringify.encodeJsonString(s, .{}, writer);
+                if (!jsonStringNeedsEscape(s)) {
+                    try writer.writeByte('"');
+                    try writer.writeAll(s);
+                    try writer.writeByte('"');
+                } else {
+                    try std.json.Stringify.encodeJsonString(s, .{}, writer);
+                }
             },
             .int32 => |v| try writer.print("{}", .{v}),
             .uint16, .uint32, .uint64 => |v| try writer.print("{}", .{v}),
@@ -69,7 +87,13 @@ pub const Value = union(enum) {
                         try writer.writeByte(',');
                     }
 
-                    try std.json.Stringify.encodeJsonString(entry.key, .{}, writer);
+                    if (!jsonStringNeedsEscape(entry.key)) {
+                        try writer.writeByte('"');
+                        try writer.writeAll(entry.key);
+                        try writer.writeByte('"');
+                    } else {
+                        try std.json.Stringify.encodeJsonString(entry.key, .{}, writer);
+                    }
                     try writer.writeByte(':');
                     try entry.value.format(writer);
                 }
