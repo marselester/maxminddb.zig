@@ -87,13 +87,10 @@ pub const Value = union(enum) {
                         try writer.writeByte(',');
                     }
 
-                    if (!jsonStringNeedsEscape(entry.key)) {
-                        try writer.writeByte('"');
-                        try writer.writeAll(entry.key);
-                        try writer.writeByte('"');
-                    } else {
-                        try std.json.Stringify.encodeJsonString(entry.key, .{}, writer);
-                    }
+                    // No need to escape field names, e.g., "city", "names",
+                    try writer.writeByte('"');
+                    try writer.writeAll(entry.key);
+                    try writer.writeByte('"');
                     try writer.writeByte(':');
                     try entry.value.format(writer);
                 }
