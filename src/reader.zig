@@ -87,8 +87,10 @@ pub const Reader = struct {
     // This lets us return the correct prefix length
     // without re-traversing the tree for terminal nodes in the index.
     ipv4_index_prefix_len: ?[]u8,
-    memory_map: ?std.Io.File.MemoryMap,
-    io: std.Io,
+    memory_map: ?struct {
+        mm: std.Io.File.MemoryMap,
+        io: std.Io,
+    },
     arena: *std.heap.ArenaAllocator,
 
     pub const Options = struct {
@@ -156,7 +158,6 @@ pub const Reader = struct {
 
     fn init(
         arena: *std.heap.ArenaAllocator,
-        io: std.Io,
         src: []const u8,
         options: Options,
     ) !Reader {
@@ -186,7 +187,6 @@ pub const Reader = struct {
             .ipv4_index = null,
             .ipv4_index_prefix_len = null,
             .memory_map = null,
-            .io = io,
             .arena = arena,
         };
 
@@ -197,6 +197,22 @@ pub const Reader = struct {
         }
 
         return r;
+    }
+
+    /// Constructs a reader from a byte slice.
+    pub fn fromBytes(
+        allocator: std.mem.Allocator,
+        src: []const u8,
+        options: Options,
+    ) !Reader {
+        const arena = try allocator.create(std.heap.ArenaAllocator);
+        errdefer {
+            arena.deinit();
+            allocator.destroy(arena);
+        }
+        arena.* = std.heap.ArenaAllocator.init(allocator);
+
+        return try init(arena, src, options);
     }
 
     /// Loads a MaxMind DB file into memory.
@@ -220,7 +236,7 @@ pub const Reader = struct {
             .limited(max_db_size),
         );
 
-        return try init(arena, io, src, options);
+        return try init(arena, src, options);
     }
 
     /// Maps a MaxMind DB file into memory.
@@ -254,8 +270,8 @@ pub const Reader = struct {
         }
         arena.* = std.heap.ArenaAllocator.init(allocator);
 
-        var r = try init(arena, io, mm.memory, options);
-        r.memory_map = mm;
+        var r = try init(arena, mm.memory, options);
+        r.memory_map = .{ .mm = mm, .io = io };
 
         return r;
     }
@@ -269,7 +285,7 @@ pub const Reader = struct {
         allocator.destroy(self.arena);
 
         if (self.memory_map) |*mm| {
-            mm.destroy(self.io);
+            mm.mm.destroy(mm.io);
         }
     }
 
@@ -278,7 +294,7 @@ pub const Reader = struct {
     ///
     /// The returned Result owns an arena, so you should call deinit() to free it.
     pub fn lookup(
-        self: *Reader,
+        self: *const Reader,
         T: type,
         allocator: std.mem.Allocator,
         address: std.Io.net.IpAddress,
@@ -296,7 +312,7 @@ pub const Reader = struct {
     /// Returns null if the IP address is not found or the record is empty.
     /// Empty records are skipped by default.
     /// Use include_empty_values = true to return them.
-    pub fn find(self: *Reader, address: std.Io.net.IpAddress, options: EntryOptions) !?Entry {
+    pub fn find(self: *const Reader, address: std.Io.net.IpAddress, options: EntryOptions) !?Entry {
         const ip = net.IP.init(address);
         if (ip.bitCount() == 128 and self.metadata.ip_version == 4) {
             return ReadError.IPv6AddressInIPv4Database;
@@ -328,7 +344,7 @@ pub const Reader = struct {
     /// Decodes an entry from the data section.
     /// The returned Result owns an arena, so you should call deinit() to free it.
     pub fn decode(
-        self: *Reader,
+        self: *const Reader,
         T: type,
         allocator: std.mem.Allocator,
         entry: Entry,
@@ -355,7 +371,7 @@ pub const Reader = struct {
     ///
     /// Each returned Result owns an arena, so you should call deinit() to free it.
     pub fn scan(
-        self: *Reader,
+        self: *const Reader,
         T: type,
         allocator: std.mem.Allocator,
         network: net.Network,
@@ -376,7 +392,7 @@ pub const Reader = struct {
     ///
     /// Empty records are skipped by default.
     /// Use include_empty_values = true to yield them.
-    pub fn entries(self: *Reader, network: net.Network, options: EntryOptions) !EntryIterator {
+    pub fn entries(self: *const Reader, network: net.Network, options: EntryOptions) !EntryIterator {
         const prefix_len: usize = network.prefix_len;
         const ip_raw = net.IP.init(network.ip);
         const bit_count: usize = ip_raw.bitCount();
@@ -486,7 +502,7 @@ pub const Reader = struct {
     }
 
     fn resolveDataPointerAndDecode(
-        self: *Reader,
+        self: *const Reader,
         allocator: std.mem.Allocator,
         T: type,
         pointer: usize,
@@ -502,7 +518,7 @@ pub const Reader = struct {
         return try d.decodeRecord(allocator, T, field_names);
     }
 
-    fn resolveDataPointer(self: *Reader, pointer: usize) !usize {
+    fn resolveDataPointer(self: *const Reader, pointer: usize) !usize {
         const min_pointer = self.metadata.node_count + data_section_separator_size;
         if (pointer < min_pointer) {
             return ReadError.CorruptedTree;
@@ -517,7 +533,7 @@ pub const Reader = struct {
     }
 
     // Checks if the record at the given data pointer is an empty map (zero entries).
-    fn isEmptyRecord(self: *Reader, pointer: usize) !bool {
+    fn isEmptyRecord(self: *const Reader, pointer: usize) !bool {
         const record_offset = try self.resolveDataPointer(pointer);
         var d = decoder.Decoder{
             .src = self.src[self.offset..],
@@ -530,7 +546,7 @@ pub const Reader = struct {
     // Uses the IPv4 index for fast lookups.
     // The index covers the first N bits of the IPv4 address, allowing us to
     // skip directly to the node at depth N instead of traversing bit by bit.
-    fn findAddressInTreeWithIndex(self: *Reader, ip: net.IP) !struct { usize, usize } {
+    fn findAddressInTreeWithIndex(self: *const Reader, ip: net.IP) !struct { usize, usize } {
         const ip_int = std.mem.readInt(u32, &ip.v4, .big);
         const index_pos = std.math.shr(usize, ip_int, 32 - self.ipv4_index_first_n_bits);
 
@@ -551,7 +567,7 @@ pub const Reader = struct {
     }
 
     fn findAddressInTree(
-        self: *Reader,
+        self: *const Reader,
         ip: net.IP,
         start_node: usize,
         start_bit: usize,
@@ -581,7 +597,7 @@ pub const Reader = struct {
         return ReadError.InvalidTreeNode;
     }
 
-    fn startNode(self: *Reader, length: usize) usize {
+    fn startNode(self: *const Reader, length: usize) usize {
         return if (length == 128) 0 else self.ipv4_start;
     }
 
@@ -603,7 +619,7 @@ pub const Reader = struct {
         self.ipv4_start = node;
     }
 
-    fn readNode(self: *Reader, node_number: usize, index: usize) usize {
+    fn readNode(self: *const Reader, node_number: usize, index: usize) usize {
         const src = self.src;
         const base_offset: usize = node_number * self.metadata.record_size / 4;
 
@@ -695,7 +711,7 @@ pub fn Cache(comptime T: type) type {
         /// The returned value is valid until the cache entry is evicted or cache.deinit() is called.
         pub fn decode(
             self: *Self,
-            db: *Reader,
+            db: *const Reader,
             entry: Reader.Entry,
             options: Reader.DecodeOptions,
         ) !T {
@@ -773,7 +789,7 @@ pub fn ResultIterator(T: type) type {
 /// Empty records are skipped by default, see EntryOptions.
 /// Use Reader.decode() or Cache.decode() to decode individual entries.
 pub const EntryIterator = struct {
-    reader: *Reader,
+    reader: *const Reader,
     node_count: usize,
     stack: [max_stack_size]ScanNode = undefined,
     stack_len: usize = 0,
