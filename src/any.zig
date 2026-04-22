@@ -1,5 +1,106 @@
 const std = @import("std");
 
+const decoder = @import("decoder.zig");
+const filter = @import("filter.zig");
+
+/// Decodes any.Value at the decoder's current offset.
+///
+/// When field_names is null, all map entries are decoded.
+/// When field_names is non-empty, only top-level map entries matching those names are decoded.
+/// Nested values are always fully decoded.
+/// When field_names is empty, no entries are decoded.
+pub fn decode(
+    d: *decoder.Decoder,
+    allocator: std.mem.Allocator,
+    field_names: ?[]const []const u8,
+) !Value {
+    if (field_names != null and field_names.?.len == 0) {
+        return .{ .map = &.{} };
+    }
+
+    return try decodeAny(d, allocator, field_names);
+}
+
+fn decodeAny(
+    d: *decoder.Decoder,
+    allocator: std.mem.Allocator,
+    field_names: ?[]const []const u8,
+) !Value {
+    const field = try d.decodeFieldSizeAndType();
+
+    if (field.type == .Pointer) {
+        const next_offset = d.decodePointer(field.size);
+        const prev_offset = d.offset;
+
+        d.offset = next_offset;
+        const v = try decodeAny(d, allocator, field_names);
+        d.offset = prev_offset;
+
+        return v;
+    }
+
+    return switch (field.type) {
+        .String, .Bytes => .{ .string = d.decodeBytes(field.size) },
+        .Double => .{ .double = try d.decodeDouble(field.size) },
+        .Float => .{ .float = try d.decodeFloat(field.size) },
+        .Uint16 => .{ .uint16 = try d.decodeInteger(u16, field.size) },
+        .Uint32 => .{ .uint32 = try d.decodeInteger(u32, field.size) },
+        .Int32 => .{ .int32 = try d.decodeInteger(i32, field.size) },
+        .Uint64 => .{ .uint64 = try d.decodeInteger(u64, field.size) },
+        .Uint128 => .{ .uint128 = try d.decodeInteger(u128, field.size) },
+        .Bool => .{ .boolean = try d.decodeBool(field.size) },
+        .Array => {
+            const items = try allocator.alloc(Value, field.size);
+            for (items) |*item| {
+                item.* = try decodeAny(d, allocator, null);
+            }
+            return .{ .array = items };
+        },
+        .Map => {
+            const entries = try allocator.alloc(Value.Entry, field.size);
+            var n: usize = 0;
+            for (0..field.size) |_| {
+                const key = try decodeMapKey(d);
+
+                if (!filter.matches(field_names, key)) {
+                    try d.skipValue();
+                    continue;
+                }
+
+                entries[n] = .{
+                    .key = key,
+                    .value = try decodeAny(d, allocator, null),
+                };
+                n += 1;
+            }
+
+            return .{ .map = entries[0..n] };
+        },
+        else => decoder.DecodeError.UnsupportedFieldType,
+    };
+}
+
+fn decodeMapKey(d: *decoder.Decoder) ![]const u8 {
+    const field = try d.decodeFieldSizeAndType();
+
+    if (field.type == .Pointer) {
+        const next_offset = d.decodePointer(field.size);
+        const prev_offset = d.offset;
+
+        d.offset = next_offset;
+        const key = try decodeMapKey(d);
+        d.offset = prev_offset;
+
+        return key;
+    }
+
+    if (field.type != .String and field.type != .Bytes) {
+        return decoder.DecodeError.ExpectedStringOrBytes;
+    }
+
+    return d.decodeBytes(field.size);
+}
+
 /// A tagged union that can hold any MaxMind DB data type.
 /// Use instead of a predefined struct to decode any record without knowing the schema.
 pub const Value = union(enum) {
@@ -292,7 +393,7 @@ test "get" {
         },
     };
 
-    try std.testing.expectEqual(@as(u16, 1), map.get("a").?.uint16);
+    try std.testing.expectEqual(1, map.get("a").?.uint16);
     try std.testing.expectEqual(null, map.get("b"));
     try std.testing.expectEqual(null, (Value{ .uint16 = 1 }).get("a"));
 }

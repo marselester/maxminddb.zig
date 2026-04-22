@@ -149,3 +149,34 @@ test "parseAlloc copies bytes" {
     try std.testing.expectEqualStrings("city", got[0]);
     try std.testing.expectEqualStrings("country", got[1]);
 }
+
+pub fn matches(field_names: ?[]const []const u8, name: []const u8) bool {
+    const names = field_names orelse return true;
+
+    for (names) |n| {
+        if (std.mem.eql(u8, n, name)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+test matches {
+    const f = &.{ "city", "country" };
+    const tests = [_]struct {
+        field_names: ?[]const []const u8,
+        name: []const u8,
+        want: bool,
+    }{
+        .{ .field_names = null, .name = "anything", .want = true },
+        .{ .field_names = &.{}, .name = "anything", .want = false },
+        .{ .field_names = f, .name = "city", .want = true },
+        .{ .field_names = f, .name = "country", .want = true },
+        .{ .field_names = f, .name = "continent", .want = false },
+    };
+
+    for (tests) |tc| {
+        try std.testing.expectEqual(tc.want, matches(tc.field_names, tc.name));
+    }
+}

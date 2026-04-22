@@ -3,6 +3,8 @@ const std = @import("std");
 const decoder = @import("decoder.zig");
 const collection = @import("collection.zig");
 const net = @import("net.zig");
+const typed = @import("typed.zig");
+const any = @import("any.zig");
 
 pub const ReadError = error{
     MetadataStartNotFound,
@@ -48,7 +50,11 @@ pub const Metadata = struct {
             .offset = 0,
         };
 
-        return try d.decodeRecord(allocator, T, null);
+        if (comptime T == any.Value) {
+            return try any.decode(&d, allocator, null);
+        }
+
+        return try typed.decode(&d, allocator, T, null);
     }
 
     fn findMetadataStart(src: []const u8) !usize {
@@ -515,7 +521,11 @@ pub const Reader = struct {
             .offset = record_offset,
         };
 
-        return try d.decodeRecord(allocator, T, field_names);
+        if (comptime T == any.Value) {
+            return try any.decode(&d, allocator, field_names);
+        }
+
+        return try typed.decode(&d, allocator, T, field_names);
     }
 
     fn resolveDataPointer(self: *const Reader, pointer: usize) !usize {

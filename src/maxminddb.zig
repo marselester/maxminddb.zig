@@ -2,6 +2,7 @@ const std = @import("std");
 
 const reader = @import("reader.zig");
 const decoder = @import("decoder.zig");
+const typed = @import("typed.zig");
 const collection = @import("collection.zig");
 const net = @import("net.zig");
 const filter = @import("filter.zig");
@@ -10,7 +11,7 @@ pub const any = @import("any.zig");
 pub const geolite2 = @import("geolite2.zig");
 pub const geoip2 = @import("geoip2.zig");
 
-pub const Error = reader.ReadError || decoder.DecodeError;
+pub const Error = reader.ReadError || decoder.DecodeError || typed.DecodeError;
 pub const Reader = reader.Reader;
 pub const Metadata = reader.Metadata;
 pub const ResultIterator = reader.ResultIterator;
