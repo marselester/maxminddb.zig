@@ -36,6 +36,16 @@ pub const DataField = struct {
     type: FieldType,
 };
 
+// A single control byte in the MMDB wire format,
+// see https://maxmind.github.io/MaxMind-DB/#data-field-format.
+//
+// The type 0 means the real type is encoded in the next byte.
+// The size in 29..31 means extension bytes follow to encode the real size.
+const ControlByte = packed struct(u8) {
+    size: u5,
+    type: u3,
+};
+
 pub const Decoder = struct {
     src: []const u8,
     offset: usize,
@@ -195,45 +205,43 @@ pub const Decoder = struct {
         return field.type == .Map and field.size == 0;
     }
 
-    // Decodes a control byte that provides information about the field's data type and payload size,
-    // see https://maxmind.github.io/MaxMind-DB/#data-field-format.
+    // Decodes a control byte into a field type and payload size.
     pub fn decodeFieldSizeAndType(self: *Decoder) !DataField {
-        const src = self.src;
-        var offset = self.offset;
+        const cb: ControlByte = @bitCast(self.src[self.offset]);
+        self.offset += 1;
 
-        const control_byte = src[offset];
-        offset += 1;
+        // Non-extended type, size fits in the 5 control-byte bits.
+        if (cb.type != 0 and cb.size < 29) {
+            @branchHint(.likely);
+            return .{
+                .size = cb.size,
+                .type = @enumFromInt(cb.type),
+            };
+        }
 
-        // The first three bits of the control byte tell you what type the field is.
-        // If these bits are all 0, then this is an "extended" type,
-        // which means that the next byte contains the actual type.
-        // Otherwise, the first three bits will contain a number from 1 to 7,
-        // the actual type for the field.
-        var field_type: FieldType = @enumFromInt(control_byte >> 5);
+        // Extended type or size-extension bytes.
+        var field_type: FieldType = @enumFromInt(cb.type);
         if (field_type == FieldType.Extended) {
             // Extended types are 7 (Map) through 15 (Float), so valid extended byte values are 0-8.
-            const ext_byte = src[offset];
+            const ext_byte = self.src[self.offset];
             if (ext_byte > 8) {
                 return DecodeError.UnsupportedFieldType;
             }
 
             field_type = @enumFromInt(ext_byte + 7);
-            offset += 1;
+            self.offset += 1;
         }
 
-        self.offset = offset;
-
         return .{
-            .size = self.decodeFieldSize(control_byte, field_type),
+            .size = self.decodeFieldSize(cb, field_type),
             .type = field_type,
         };
     }
 
     // Decodes the field size in bytes, see https://maxmind.github.io/MaxMind-DB/#payload-size.
-    fn decodeFieldSize(self: *Decoder, control_byte: u8, field_type: FieldType) usize {
-        // The next five bits in the control byte tell you how long the data field's payload is,
-        // except for maps and pointers.
-        const field_size: usize = control_byte & 0b11111;
+    fn decodeFieldSize(self: *Decoder, cb: ControlByte, field_type: FieldType) usize {
+        // Pointer types use the raw 5-bit size without extension.
+        const field_size: usize = cb.size;
         if (field_type == FieldType.Pointer) {
             return field_size;
         }
@@ -285,7 +293,11 @@ test "decodeFieldSize returns raw size for pointer type" {
         .src = &.{ 0b001_11_101, 0xAA, 0xBB, 0xCC },
         .offset = 0,
     };
-    const size = d.decodeFieldSize(0b001_11_101, .Pointer);
+    const cb: ControlByte = .{
+        .type = 0b001,
+        .size = 0b11_101,
+    };
+    const size = d.decodeFieldSize(cb, .Pointer);
     try std.testing.expectEqual(29, size);
     // Offset must not advance, i.e., no extra bytes read for size extension.
     try std.testing.expectEqual(0, d.offset);
