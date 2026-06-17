@@ -697,11 +697,20 @@ pub fn Cache(comptime T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            self.reset();
+            self.allocator.free(self.entries);
+        }
+
+        /// Drops every cached entry, freeing arenas, and leaves the cache
+        /// ready to receive new entries at the same capacity.
+        /// Use when the decode filter changes and cached trees are stale.
+        pub fn reset(self: *Self) void {
             for (self.entries[0..self.len]) |*e| {
                 e.arena.deinit();
             }
 
-            self.allocator.free(self.entries);
+            self.len = 0;
+            self.write_pos = 0;
         }
 
         /// Returns a cached value for the given data pointer, or null on cache miss.
