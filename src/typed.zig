@@ -61,7 +61,7 @@ fn decodeStruct(
     const map_len = data_field.size;
     var field_count: usize = 0;
     while (field_count < map_len) : (field_count += 1) {
-        const map_key = try decodeValue(d, allocator, []const u8);
+        const map_key = try d.decodeStringKey();
 
         var found = false;
         inline for (std.meta.fields(T)) |f| {
@@ -138,7 +138,7 @@ fn decodeValue(d: *decoder.Decoder, allocator: std.mem.Allocator, T: type) !T {
 
                 const entries = try allocator.alloc(DecodedType.Entry, field.size);
                 for (entries) |*e| {
-                    e.key = try decodeValue(d, allocator, []const u8);
+                    e.key = try d.decodeStringKey();
                     e.value = try decodeValue(
                         d,
                         allocator,

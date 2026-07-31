@@ -67,7 +67,7 @@ fn decodeAny(
             const entries = try allocator.alloc(Value.Entry, field.size);
             var n: usize = 0;
             for (0..field.size) |_| {
-                const key = try decodeMapKey(d);
+                const key = try d.decodeStringKey();
 
                 if (!filter.matches(field_names, key)) {
                     try d.skipValue();
@@ -87,30 +87,12 @@ fn decodeAny(
     };
 }
 
-fn decodeMapKey(d: *decoder.Decoder) ![]const u8 {
-    const field = try d.decodeFieldSizeAndType();
-
-    if (field.type == .Pointer) {
-        const next_offset = try d.followPointer(field.size);
-        const prev_offset = d.offset;
-
-        d.offset = next_offset;
-        const key = try decodeMapKey(d);
-        d.offset = prev_offset;
-
-        return key;
-    }
-
-    if (field.type != .String and field.type != .Bytes) {
-        return decoder.DecodeError.ExpectedStringOrBytes;
-    }
-
-    return d.decodeBytes(field.size);
-}
-
 /// A tagged union that can hold any MaxMind DB data type.
 /// Use instead of a predefined struct to decode any record without knowing the schema.
 pub const Value = union(enum) {
+    // .none is the C-ABI "not present" sentinel MMDB_V_NONE.
+    // It's unreachable in Zig code.
+    none,
     string: []const u8,
     bytes: []const u8,
     double: f64,
@@ -160,6 +142,7 @@ pub const Value = union(enum) {
     /// Formats the Value as JSON using a writer.
     pub fn format(self: Value, writer: anytype) !void {
         switch (self) {
+            .none => try writer.writeAll("null"),
             .string => |s| {
                 if (!jsonStringNeedsEscape(s)) {
                     try writer.writeByte('"');
@@ -417,7 +400,7 @@ test "get" {
     try std.testing.expectEqual(null, (Value{ .uint16 = 1 }).get("a"));
 }
 
-test "decodeMapKey rejects a key pointer to a pointer" {
+test "decode rejects a key pointer to a pointer" {
     // A Map with 1 entry (0xE1 = type 7, size 1) whose key is a 1-byte pointer to offset 3,
     // which is itself a pointer (illegal).
     var d = decoder.Decoder{

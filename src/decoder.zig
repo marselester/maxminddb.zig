@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub const DecodeError = error{
     UnsupportedFieldType,
+    ExpectedString,
     ExpectedStringOrBytes,
     InvalidIntegerSize,
     InvalidBoolSize,
@@ -97,6 +98,36 @@ pub const Decoder = struct {
         }
 
         return next;
+    }
+
+    // Reads a map key, following a pointer to it if present.
+    // Map keys are always strings per the spec.
+    pub inline fn decodeStringKey(self: *Decoder) DecodeError![]const u8 {
+        var field = try self.decodeFieldSizeAndType();
+
+        // A pointer key resolves to a string elsewhere.
+        // The value follows the pointer bytes,
+        // so we remember that position and rewind to it after reading the key.
+        var restore: ?usize = null;
+        if (field.type == .Pointer) {
+            const target = try self.followPointer(field.size);
+
+            restore = self.offset;
+            self.offset = target;
+
+            field = try self.decodeFieldSizeAndType();
+        }
+
+        if (field.type != .String) {
+            return DecodeError.ExpectedString;
+        }
+
+        const key = self.decodeBytes(field.size);
+        if (restore) |r| {
+            self.offset = r;
+        }
+
+        return key;
     }
 
     // Skips a value in the database without decoding it.
@@ -240,14 +271,21 @@ pub const Decoder = struct {
         };
     }
 
-    // Checks whether the value at the current offset is an empty map, following any pointers.
-    pub fn isEmptyMap(self: *Decoder) !bool {
+    // Reads a field header, following any pointer chain to the target's payload,
+    // and returns the resolved (non-pointer) field.
+    pub inline fn resolveField(self: *Decoder) DecodeError!DataField {
         var field = try self.decodeFieldSizeAndType();
         while (field.type == .Pointer) {
             self.offset = try self.followPointer(field.size);
             field = try self.decodeFieldSizeAndType();
         }
 
+        return field;
+    }
+
+    // Checks whether the value at the current offset is an empty map, following any pointers.
+    pub fn isEmptyMap(self: *Decoder) !bool {
+        const field = try self.resolveField();
         return field.type == .Map and field.size == 0;
     }
 
@@ -375,4 +413,28 @@ test "followPointer enforces the traversal budget" {
 
     _ = try d.followPointer(0);
     try std.testing.expectError(error.TooManyPointers, d.followPointer(0));
+}
+
+test "decodeStringKey rejects a non-string key" {
+    var d = Decoder{
+        .src = &.{
+            0x81, // Bytes value (type 4, size 1).
+            0xAA,
+        },
+        .offset = 0,
+    };
+    try std.testing.expectError(error.ExpectedString, d.decodeStringKey());
+}
+
+test "decodeStringKey follows a pointer key and rewinds to the value" {
+    // The key at offset 0 is a pointer to offset 4, where "hi" (0x42 = String, size 2) lives.
+    // The value would begin at offset 2, right after the pointer bytes.
+    var d = Decoder{
+        .src = &.{ 0x20, 0x04, 0xAB, 0xCD, 0x42, 0x68, 0x69 },
+        .offset = 0,
+    };
+
+    const key = try d.decodeStringKey();
+    try std.testing.expectEqualStrings("hi", key);
+    try std.testing.expectEqual(@as(usize, 2), d.offset);
 }

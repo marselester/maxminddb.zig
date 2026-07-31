@@ -5,6 +5,7 @@ const collection = @import("collection.zig");
 const net = @import("net.zig");
 const typed = @import("typed.zig");
 const any = @import("any.zig");
+const lazy = @import("lazy.zig");
 
 pub const ReadError = error{
     MetadataStartNotFound,
@@ -466,6 +467,18 @@ pub const Reader = struct {
         }
 
         return it;
+    }
+
+    /// Walks a flat map-key path from an entry's root with zero allocations.
+    /// Returns the value at the terminal, or null if any step does not resolve, e.g., missing key.
+    /// An empty path resolves to the record root, which is non-null for a valid entry.
+    pub fn entryField(
+        self: *const Reader,
+        entry: Entry,
+        path: []const []const u8,
+    ) !?lazy.Value {
+        const record_offset = try self.resolveDataPointer(entry.pointer);
+        return try lazy.walkPath(self.src[self.offset..], record_offset, path);
     }
 
     fn buildIPv4Index(self: *Reader) !void {
