@@ -12,6 +12,7 @@ pub const ReadError = error{
     CorruptedTree,
     UnknownRecordSize,
     InvalidPrefixLen,
+    InvalidIndexBits,
     IndexAlreadyBuilt,
     IPv6AddressInIPv4Database,
 };
@@ -174,12 +175,16 @@ pub const Reader = struct {
             else => return ReadError.UnknownRecordSize,
         }
 
-        const search_tree_size = try std.math.mul(
+        const search_tree_size = std.math.mul(
             usize,
             metadata.node_count,
             metadata.record_size / 4,
-        );
-        const data_offset = search_tree_size + data_section_separator_size;
+        ) catch return ReadError.CorruptedTree;
+        const data_offset = std.math.add(
+            usize,
+            search_tree_size,
+            data_section_separator_size,
+        ) catch return ReadError.CorruptedTree;
         if (data_offset > src.len) {
             return ReadError.CorruptedTree;
         }
@@ -449,7 +454,7 @@ pub const Reader = struct {
 
     fn buildIPv4Index(self: *Reader) !void {
         if (self.ipv4_index_first_n_bits > 24) {
-            return ReadError.InvalidPrefixLen;
+            return ReadError.InvalidIndexBits;
         }
         if (self.ipv4_index != null) {
             return ReadError.IndexAlreadyBuilt;

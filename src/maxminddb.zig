@@ -167,7 +167,7 @@ test "Reader.open" {
 }
 
 test "reject index bits > 24" {
-    try expectError(error.InvalidPrefixLen, Reader.mmap(
+    try expectError(error.InvalidIndexBits, Reader.mmap(
         allocator,
         io,
         "test-data/test-data/GeoLite2-City-Test.mmdb",
