@@ -187,6 +187,28 @@ while (try it.next()) |entry| {
 }
 ```
 
+Use `decodeUnmanaged()` with a reusable arena when you only need a subset of networks,
+filter on the cheap `entry.network` before paying the decode cost:
+
+```zig
+var arena = std.heap.ArenaAllocator.init(allocator);
+defer arena.deinit();
+const arena_allocator = arena.allocator();
+
+var it = try db.entries(maxminddb.Network.all_ipv4, .{});
+
+while (try it.next()) |entry| {
+    // Skip decoding.
+    if (entry.network.prefix_len < 24) {
+        continue;
+    }
+
+    const value = try db.decodeUnmanaged(maxminddb.any.Value, arena_allocator, entry, .{});
+    std.debug.print("{f} {f}\n", .{ entry.network, value });
+    _ = arena.reset(.retain_capacity);
+}
+```
+
 ## Benchmarks
 
 The impact of each optimization depends on the database:

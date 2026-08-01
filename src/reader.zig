@@ -364,18 +364,34 @@ pub const Reader = struct {
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
 
-        const value = try self.resolveDataPointerAndDecode(
-            arena.allocator(),
-            T,
-            entry.pointer,
-            options.only,
-        );
+        const value = try self.decodeUnmanaged(T, arena.allocator(), entry, options);
 
         return .{
             .network = entry.network,
             .value = value,
             .arena = arena,
         };
+    }
+
+    /// Decodes an entry and returns the bare value.
+    /// Use this when you manage the arena yourself, e.g., Cache, ResultIterator.
+    /// For one-shot lookups, prefer decode() which bundles an arena with the result.
+    ///
+    /// Use ArenaAllocator or similar because individual allocations aren't tracked
+    /// and can't be freed individually.
+    pub fn decodeUnmanaged(
+        self: *const Reader,
+        T: type,
+        allocator: std.mem.Allocator,
+        entry: Entry,
+        options: DecodeOptions,
+    ) !T {
+        return try self.resolveDataPointerAndDecode(
+            allocator,
+            T,
+            entry.pointer,
+            options.only,
+        );
     }
 
     /// Scans networks within the given IP range.
@@ -746,12 +762,7 @@ pub fn Cache(comptime T: type) type {
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             errdefer arena.deinit();
 
-            const value = try db.resolveDataPointerAndDecode(
-                arena.allocator(),
-                T,
-                entry.pointer,
-                options.only,
-            );
+            const value = try db.decodeUnmanaged(T, arena.allocator(), entry, options);
 
             self.insert(.{
                 .pointer = entry.pointer,
@@ -793,11 +804,11 @@ pub fn ResultIterator(T: type) type {
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             errdefer arena.deinit();
 
-            const value = try self.it.reader.resolveDataPointerAndDecode(
-                arena.allocator(),
+            const value = try self.it.reader.decodeUnmanaged(
                 T,
-                entry.pointer,
-                self.field_names,
+                arena.allocator(),
+                entry,
+                .{ .only = self.field_names },
             );
 
             return .{
