@@ -56,18 +56,9 @@ pub const Decoder = struct {
     pub fn skipValue(self: *Decoder) !void {
         const field = try self.decodeFieldSizeAndType();
 
-        if (field.type == FieldType.Pointer) {
-            const next_offset = self.decodePointer(field.size);
-            const prev_offset = self.offset;
-
-            self.offset = next_offset;
-            try self.skipValue();
-            self.offset = prev_offset;
-
-            return;
-        }
-
         switch (field.type) {
+            // Consume the pointer bytes, don't follow to its payload.
+            .Pointer => _ = self.decodePointer(field.size),
             // Bool has no payload, size is encoded in the control byte.
             .Bool => {},
             // Skip each array element.
