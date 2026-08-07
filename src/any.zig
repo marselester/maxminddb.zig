@@ -29,7 +29,7 @@ fn decodeAny(
     const field = try d.decodeFieldSizeAndType();
 
     if (field.type == .Pointer) {
-        const next_offset = d.decodePointer(field.size);
+        const next_offset = try d.followPointer(field.size);
         const prev_offset = d.offset;
 
         d.offset = next_offset;
@@ -50,6 +50,9 @@ fn decodeAny(
         .Uint128 => .{ .uint128 = try d.decodeInteger(u128, field.size) },
         .Bool => .{ .boolean = try d.decodeBool(field.size) },
         .Array => {
+            try d.descend();
+            defer d.ascend();
+
             const items = try allocator.alloc(Value, field.size);
             for (items) |*item| {
                 item.* = try decodeAny(d, allocator, null);
@@ -57,6 +60,9 @@ fn decodeAny(
             return .{ .array = items };
         },
         .Map => {
+            try d.descend();
+            defer d.ascend();
+
             const entries = try allocator.alloc(Value.Entry, field.size);
             var n: usize = 0;
             for (0..field.size) |_| {

@@ -92,7 +92,7 @@ fn decodeValue(d: *decoder.Decoder, allocator: std.mem.Allocator, T: type) !T {
     const field = try d.decodeFieldSizeAndType();
 
     if (field.type == .Pointer) {
-        const next_offset = d.decodePointer(field.size);
+        const next_offset = try d.followPointer(field.size);
         const prev_offset = d.offset;
 
         d.offset = next_offset;

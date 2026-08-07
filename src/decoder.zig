@@ -7,7 +7,12 @@ pub const DecodeError = error{
     InvalidBoolSize,
     InvalidDoubleSize,
     InvalidFloatSize,
+    TooDeep,
+    InvalidPointer,
 };
+
+// Maximum nesting depth for decoded data structures.
+pub const max_data_structure_depth: usize = 512;
 
 // These are database field types as defined in the spec.
 pub const FieldType = enum {
@@ -49,6 +54,37 @@ const ControlByte = packed struct(u8) {
 pub const Decoder = struct {
     src: []const u8,
     offset: usize,
+    depth: usize = 0,
+
+    // Enter one nesting level or fail if that would exceed the depth limit.
+    pub fn descend(self: *Decoder) DecodeError!void {
+        if (self.depth >= max_data_structure_depth) {
+            return DecodeError.TooDeep;
+        }
+
+        self.depth += 1;
+    }
+
+    pub fn ascend(self: *Decoder) void {
+        self.depth -= 1;
+    }
+
+    // Resolves a pointer to its target offset.
+    // Rejects a target that lands past the data section or that begins with another pointer:
+    // both indicate a corrupt DB.
+    pub fn followPointer(self: *Decoder, field_size: usize) DecodeError!usize {
+        const next = self.decodePointer(field_size);
+        if (next >= self.src.len) {
+            return DecodeError.InvalidPointer;
+        }
+
+        const cb: ControlByte = @bitCast(self.src[next]);
+        if (cb.type == @intFromEnum(FieldType.Pointer)) {
+            return DecodeError.InvalidPointer;
+        }
+
+        return next;
+    }
 
     // Skips a value in the database without decoding it.
     // This is used when the database has fields that don't exist in the target struct
@@ -63,12 +99,18 @@ pub const Decoder = struct {
             .Bool => {},
             // Skip each array element.
             .Array => {
+                try self.descend();
+                defer self.ascend();
+
                 for (0..field.size) |_| {
                     try self.skipValue();
                 }
             },
             // Skip each map key-value pair.
             .Map => {
+                try self.descend();
+                defer self.ascend();
+
                 for (0..field.size) |_| {
                     try self.skipValue();
                     try self.skipValue();
@@ -292,4 +334,20 @@ test "decodeFieldSize returns raw size for pointer type" {
     try std.testing.expectEqual(29, size);
     // Offset must not advance, i.e., no extra bytes read for size extension.
     try std.testing.expectEqual(0, d.offset);
+}
+
+test "followPointer rejects a pointer to a pointer" {
+    // 0x20 is a 1-byte pointer.
+    // Its payload byte is the target offset.
+    // The pointer at 0 resolves to offset 2, which is itself a pointer (illegal).
+    var d = Decoder{
+        .src = &.{ 0x20, 0x02, 0x20, 0x00 },
+        .offset = 0,
+    };
+    const field = try d.decodeFieldSizeAndType();
+
+    try std.testing.expectError(
+        error.InvalidPointer,
+        d.followPointer(field.size),
+    );
 }

@@ -146,6 +146,25 @@ test "Metadata.decodeAs any.Value" {
     try expectEqual(2, meta.get("binary_format_major_version").?.uint16);
 }
 
+test "reject data nested past the depth limit" {
+    const paths = [_][]const u8{
+        "test-data/bad-data/libmaxminddb/libmaxminddb-deep-nesting.mmdb",
+        "test-data/bad-data/libmaxminddb/libmaxminddb-deep-array-nesting.mmdb",
+    };
+    for (paths) |path| {
+        var db = try Reader.mmap(allocator, io, path, .{});
+        defer db.close();
+
+        const network = if (db.metadata.ip_version == 4)
+            net.Network.all_ipv4
+        else
+            net.Network.all_ipv6;
+
+        var it = try db.scan(any.Value, allocator, network, .{});
+        try expectError(error.TooDeep, it.next());
+    }
+}
+
 test "reject invalid metadata" {
     try expectError(error.MetadataStartNotFound, Metadata.decode(allocator, "not a valid mmdb"));
 }
@@ -1151,7 +1170,7 @@ test "scan skips empty records" {
         while (try it.next()) |item| : (n += 1) {
             item.deinit();
         }
-        try expectEqual(571, n);
+        try expectEqual(599, n);
     }
 
     // Only non-empty records.
@@ -1164,7 +1183,7 @@ test "scan skips empty records" {
         while (try it.next()) |item| : (n += 1) {
             item.deinit();
         }
-        try expectEqual(8, n);
+        try expectEqual(12, n);
     }
 }
 
