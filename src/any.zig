@@ -40,7 +40,8 @@ fn decodeAny(
     }
 
     return switch (field.type) {
-        .String, .Bytes => .{ .string = d.decodeBytes(field.size) },
+        .String => .{ .string = d.decodeBytes(field.size) },
+        .Bytes => .{ .bytes = d.decodeBytes(field.size) },
         .Double => .{ .double = try d.decodeDouble(field.size) },
         .Float => .{ .float = try d.decodeFloat(field.size) },
         .Uint16 => .{ .uint16 = try d.decodeInteger(u16, field.size) },
@@ -111,6 +112,7 @@ fn decodeMapKey(d: *decoder.Decoder) ![]const u8 {
 /// Use instead of a predefined struct to decode any record without knowing the schema.
 pub const Value = union(enum) {
     string: []const u8,
+    bytes: []const u8,
     double: f64,
     uint16: u16,
     uint32: u32,
@@ -167,6 +169,11 @@ pub const Value = union(enum) {
                     try std.json.Stringify.encodeJsonString(s, .{}, writer);
                 }
             },
+            .bytes => |b| {
+                try writer.writeByte('"');
+                try std.base64.standard.Encoder.encodeWriter(writer, b);
+                try writer.writeByte('"');
+            },
             .int32 => |v| try writer.print("{}", .{v}),
             .uint16, .uint32, .uint64 => |v| try writer.print("{}", .{v}),
             .uint128 => |v| try writer.print("\"{}\"", .{v}),
@@ -214,6 +221,12 @@ fn expectJSON(expected: []const u8, v: Value) !void {
     var w = std.Io.Writer.fixed(&out);
     try v.format(&w);
     try std.testing.expectEqualStrings(expected, out[0..w.end]);
+}
+
+test "encode bytes as base64" {
+    try expectJSON("\"\"", .{ .bytes = "" });
+    try expectJSON("\"AAAAKg==\"", .{ .bytes = "\x00\x00\x00\x2a" });
+    try expectJSON("\"aGVsbG8=\"", .{ .bytes = "hello" });
 }
 
 test "encode scalars" {
