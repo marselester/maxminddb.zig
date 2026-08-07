@@ -165,6 +165,150 @@ test "reject data nested past the depth limit" {
     }
 }
 
+test "decode every MMDB data type" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/MaxMind-DB-test-decoder.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    // 1.1.1.0 holds a mid-range value of every type.
+    {
+        const ip = try std.Io.net.IpAddress.parse("1.1.1.0", 0);
+        const result = (try db.lookup(any.Value, allocator, ip, .{})).?;
+        defer result.deinit();
+        const v = result.value;
+
+        try expectEqualStrings("unicode! ☯ - ♫", v.get("utf8_string").?.string);
+        try expectEqual(true, v.get("boolean").?.boolean);
+        try expectEqual(@as(u16, 100), v.get("uint16").?.uint16);
+        try expectEqual(@as(u32, 268435456), v.get("uint32").?.uint32);
+        try expectEqual(@as(i32, -268435456), v.get("int32").?.int32);
+        try expectEqual(@as(u64, 1152921504606846976), v.get("uint64").?.uint64);
+        try expectEqual(
+            @as(u128, 1329227995784915872903807060280344576),
+            v.get("uint128").?.uint128,
+        );
+        try expectEqual(@as(f64, 42.123456), v.get("double").?.double);
+        try expectEqual(@as(f32, 1.1), v.get("float").?.float);
+
+        try std.testing.expectEqualSlices(
+            u8,
+            "\x00\x00\x00\x2a",
+            v.get("bytes").?.bytes,
+        );
+
+        const array = v.get("array").?.array;
+        try expectEqual(@as(usize, 3), array.len);
+        try expectEqual(@as(u32, 1), array[0].uint32);
+        try expectEqual(@as(u32, 2), array[1].uint32);
+        try expectEqual(@as(u32, 3), array[2].uint32);
+
+        // Nested map, and an array nested inside it.
+        const map_x = v.get("map").?.get("mapX").?;
+        try expectEqualStrings("hello", map_x.get("utf8_stringX").?.string);
+
+        const array_x = map_x.get("arrayX").?.array;
+        try expectEqual(@as(usize, 3), array_x.len);
+        try expectEqual(@as(u32, 7), array_x[0].uint32);
+        try expectEqual(@as(u32, 9), array_x[2].uint32);
+    }
+
+    // 255.255.255.255 holds the type maxima plus float/double infinity.
+    {
+        const ip = try std.Io.net.IpAddress.parse("255.255.255.255", 0);
+        const result = (try db.lookup(any.Value, allocator, ip, .{})).?;
+        defer result.deinit();
+        const v = result.value;
+
+        try expectEqual(@as(u16, 65535), v.get("uint16").?.uint16);
+        try expectEqual(@as(u32, 4294967295), v.get("uint32").?.uint32);
+        try expectEqual(@as(i32, 2147483647), v.get("int32").?.int32);
+        try expectEqual(@as(u64, 18446744073709551615), v.get("uint64").?.uint64);
+        try expectEqual(
+            @as(u128, 340282366920938463463374607431768211455),
+            v.get("uint128").?.uint128,
+        );
+        try expectEqual(std.math.inf(f64), v.get("double").?.double);
+        try expectEqual(std.math.inf(f32), v.get("float").?.float);
+    }
+}
+
+test "typed decode surfaces a type error for each mismatched field" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/MaxMind-DB-test-decoder.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    // 1.1.1.0 holds one field of every wire type.
+    // Declaring a field with the right name but a wrong Zig type returns a decode error.
+    const ip = try std.Io.net.IpAddress.parse("1.1.1.0", 0);
+    const tests = .{
+        // Scalar wire value decoded into the wrong scalar type.
+        .{
+            struct { uint32: u16 = 0 },
+            error.ExpectedUint16,
+        },
+        .{
+            struct { uint16: u32 = 0 },
+            error.ExpectedUint32,
+        },
+        .{
+            struct { uint32: i32 = 0 },
+            error.ExpectedInt32,
+        },
+        .{
+            struct { uint32: u64 = 0 },
+            error.ExpectedUint64,
+        },
+        .{
+            struct { uint32: u128 = 0 },
+            error.ExpectedUint128,
+        },
+        .{
+            struct { uint32: bool = false },
+            error.ExpectedBool,
+        },
+        .{
+            struct { float: f64 = 0 },
+            error.ExpectedDouble,
+        },
+        .{
+            struct { double: f32 = 0 },
+            error.ExpectedFloat,
+        },
+        .{
+            struct { uint32: []const u8 = "" },
+            error.ExpectedStringOrBytes,
+        },
+        // Scalar wire value decoded into an aggregate type.
+        .{
+            struct { uint32: struct {} = .{} },
+            error.ExpectedStructType,
+        },
+        .{
+            struct { uint32: Map(u32) = .{} },
+            error.ExpectedMap,
+        },
+        .{
+            struct { uint32: Array(u32) = .{} },
+            error.ExpectedArray,
+        },
+    };
+
+    inline for (tests) |tc| {
+        try expectError(
+            tc[1],
+            db.lookup(tc[0], allocator, ip, .{}),
+        );
+    }
+}
+
 test "reject invalid metadata" {
     try expectError(error.MetadataStartNotFound, Metadata.decode(allocator, "not a valid mmdb"));
 }
