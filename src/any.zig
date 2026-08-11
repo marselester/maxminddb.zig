@@ -91,7 +91,7 @@ fn decodeMapKey(d: *decoder.Decoder) ![]const u8 {
     const field = try d.decodeFieldSizeAndType();
 
     if (field.type == .Pointer) {
-        const next_offset = d.decodePointer(field.size);
+        const next_offset = try d.followPointer(field.size);
         const prev_offset = d.offset;
 
         d.offset = next_offset;
@@ -415,4 +415,39 @@ test "get" {
     try std.testing.expectEqual(1, map.get("a").?.uint16);
     try std.testing.expectEqual(null, map.get("b"));
     try std.testing.expectEqual(null, (Value{ .uint16 = 1 }).get("a"));
+}
+
+test "decodeMapKey rejects a key pointer to a pointer" {
+    // A Map with 1 entry (0xE1 = type 7, size 1) whose key is a 1-byte pointer to offset 3,
+    // which is itself a pointer (illegal).
+    var d = decoder.Decoder{
+        .src = &.{ 0xE1, 0x20, 0x03, 0x20, 0x00 },
+        .offset = 0,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try std.testing.expectError(
+        error.InvalidPointer,
+        decode(&d, arena.allocator(), null),
+    );
+}
+
+test "decode bounds pointer amplification with the traversal budget" {
+    // An array of three pointers all targeting the same shared string.
+    // Depth stays shallow, so only the budget catches it.
+    var d = decoder.Decoder{
+        .src = &.{ 0x03, 0x04, 0x20, 0x08, 0x20, 0x08, 0x20, 0x08, 0x42, 0x68, 0x69 },
+        .offset = 0,
+        .budget = 2,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try std.testing.expectError(
+        error.TooManyPointers,
+        decode(&d, arena.allocator(), null),
+    );
 }

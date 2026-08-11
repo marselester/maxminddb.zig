@@ -8,11 +8,16 @@ pub const DecodeError = error{
     InvalidDoubleSize,
     InvalidFloatSize,
     TooDeep,
+    TooManyPointers,
     InvalidPointer,
 };
 
 // Maximum nesting depth for decoded data structures.
 pub const max_data_structure_depth: usize = 512;
+
+// Maximum pointers followed while decoding one record.
+// Bounds pointer amplification and cycles to prevent a runaway decode.
+pub const max_pointer_follows: usize = 1 << 20;
 
 // These are database field types as defined in the spec.
 pub const FieldType = enum {
@@ -55,6 +60,8 @@ pub const Decoder = struct {
     src: []const u8,
     offset: usize,
     depth: usize = 0,
+    // Remaining pointers this decode may follow, decremented per follow.
+    budget: usize = max_pointer_follows,
 
     // Enter one nesting level or fail if that would exceed the depth limit.
     pub fn descend(self: *Decoder) DecodeError!void {
@@ -73,6 +80,12 @@ pub const Decoder = struct {
     // Rejects a target that lands past the data section or that begins with another pointer:
     // both indicate a corrupt DB.
     pub fn followPointer(self: *Decoder, field_size: usize) DecodeError!usize {
+        // Charge the traversal budget per pointer followed.
+        if (self.budget == 0) {
+            return DecodeError.TooManyPointers;
+        }
+        self.budget -= 1;
+
         const next = self.decodePointer(field_size);
         if (next >= self.src.len) {
             return DecodeError.InvalidPointer;
@@ -231,7 +244,7 @@ pub const Decoder = struct {
     pub fn isEmptyMap(self: *Decoder) !bool {
         var field = try self.decodeFieldSizeAndType();
         while (field.type == .Pointer) {
-            self.offset = self.decodePointer(field.size);
+            self.offset = try self.followPointer(field.size);
             field = try self.decodeFieldSizeAndType();
         }
 
@@ -336,18 +349,30 @@ test "decodeFieldSize returns raw size for pointer type" {
     try std.testing.expectEqual(0, d.offset);
 }
 
-test "followPointer rejects a pointer to a pointer" {
-    // 0x20 is a 1-byte pointer.
-    // Its payload byte is the target offset.
-    // The pointer at 0 resolves to offset 2, which is itself a pointer (illegal).
+test "isEmptyMap rejects a pointer to a pointer" {
+    // 0x20 is a 1-byte pointer whose payload byte is the target offset.
+    // The pointer at offset 0 resolves to offset 2, which is itself a pointer (illegal).
+    // The empty-record check follows pointers via followPointer,
+    // so it rejects this rather than chasing it.
     var d = Decoder{
         .src = &.{ 0x20, 0x02, 0x20, 0x00 },
         .offset = 0,
     };
-    const field = try d.decodeFieldSizeAndType();
 
-    try std.testing.expectError(
-        error.InvalidPointer,
-        d.followPointer(field.size),
-    );
+    try std.testing.expectError(error.InvalidPointer, d.isEmptyMap());
+}
+
+test "followPointer enforces the traversal budget" {
+    // Each followed pointer costs one budget unit.
+    var d = Decoder{
+        .src = &.{
+            0x01, // 1-byte pointer to offset 1
+            0x00, // non-pointer
+        },
+        .offset = 0,
+        .budget = 1, // permits one follow, the next trips.
+    };
+
+    _ = try d.followPointer(0);
+    try std.testing.expectError(error.TooManyPointers, d.followPointer(0));
 }

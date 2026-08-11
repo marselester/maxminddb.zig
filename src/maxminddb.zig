@@ -165,6 +165,26 @@ test "reject data nested past the depth limit" {
     }
 }
 
+test "reject a database with broken pointers" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/MaxMind-DB-test-broken-pointers-24.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    var it = try db.scan(any.Value, allocator, net.Network.all_ipv4, .{});
+    while (it.next() catch |err| {
+        try expectEqual(error.InvalidPointer, err);
+        return;
+    }) |result| {
+        result.deinit();
+    }
+
+    return error.TestExpectedBrokenPointer;
+}
+
 test "decode every MMDB data type" {
     var db = try Reader.mmap(
         allocator,
