@@ -11,6 +11,7 @@ pub const DecodeError = error{
     TooDeep,
     TooManyPointers,
     InvalidPointer,
+    InvalidDataOffset,
 };
 
 // Maximum nesting depth for decoded data structures.
@@ -63,6 +64,14 @@ pub const Decoder = struct {
     depth: usize = 0,
     // Remaining pointers this decode may follow, decremented per follow.
     budget: usize = max_pointer_follows,
+
+    // Ensures at least n bytes remain from the current offset.
+    pub inline fn requireBytes(self: *const Decoder, n: usize) DecodeError!void {
+        // Saturating subtraction avoids underflow when offset is past the end.
+        if (n > self.src.len -| self.offset) {
+            return DecodeError.InvalidDataOffset;
+        }
+    }
 
     // Enter one nesting level or fail if that would exceed the depth limit.
     pub fn descend(self: *Decoder) DecodeError!void {
@@ -202,6 +211,8 @@ pub const Decoder = struct {
             return DecodeError.InvalidDoubleSize;
         }
 
+        try self.requireBytes(field_size);
+
         const new_offset = self.offset + field_size;
         const double_bytes = self.src[self.offset..new_offset];
         self.offset = new_offset;
@@ -226,6 +237,8 @@ pub const Decoder = struct {
             return DecodeError.InvalidFloatSize;
         }
 
+        try self.requireBytes(field_size);
+
         const new_offset = self.offset + field_size;
         const float_bytes = self.src[self.offset..new_offset];
         self.offset = new_offset;
@@ -247,6 +260,8 @@ pub const Decoder = struct {
         if (field_size > @sizeOf(T)) {
             return DecodeError.InvalidIntegerSize;
         }
+
+        try self.requireBytes(field_size);
 
         const offset = self.offset;
         const new_offset = offset + field_size;
@@ -339,7 +354,7 @@ pub const Decoder = struct {
 
         return switch (field_size) {
             0...28 => field_size,
-            29 => 29 + size_bytes[0],
+            29 => 29 + toUsize(size_bytes, 0),
             30 => 285 + toUsize(size_bytes, 0),
             else => 65_821 + toUsize(size_bytes, 0),
         };

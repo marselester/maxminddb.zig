@@ -17,6 +17,14 @@ pub const Network = struct {
         if (std.mem.findScalar(u8, s, '/')) |sep| {
             const ip = try std.Io.net.IpAddress.parse(s[0..sep], 0);
             const prefix_len = try std.fmt.parseInt(usize, s[sep + 1 ..], 10);
+            const max_prefix_len: usize = switch (ip) {
+                .ip4 => 32,
+                .ip6 => 128,
+            };
+            if (prefix_len > max_prefix_len) {
+                return error.InvalidPrefixLen;
+            }
+
             return .{
                 .ip = ip,
                 .prefix_len = prefix_len,
@@ -111,6 +119,17 @@ test "Network.parse" {
 
     const no_cidr_v6 = try Network.parse("2001:db8::1");
     try std.testing.expectEqual(128, no_cidr_v6.prefix_len);
+
+    // A prefix wider than the address is rejected.
+    try std.testing.expectError(error.InvalidPrefixLen, Network.parse("1.2.3.4/33"));
+    try std.testing.expectError(error.InvalidPrefixLen, Network.parse("2001:db8::/129"));
+
+    // The exact boundary is accepted.
+    var got = try Network.parse("1.2.3.4/32");
+    try std.testing.expectEqual(32, got.prefix_len);
+
+    got = try Network.parse("2001:db8::/128");
+    try std.testing.expectEqual(128, got.prefix_len);
 }
 
 // Represents IPv4 or IPv6 bytes.

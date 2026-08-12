@@ -12,6 +12,7 @@ pub const ReadError = error{
     InvalidTreeNode,
     CorruptedTree,
     UnknownRecordSize,
+    UnknownIPVersion,
     InvalidPrefixLen,
     InvalidIndexBits,
     IndexAlreadyBuilt,
@@ -174,6 +175,11 @@ pub const Reader = struct {
         switch (metadata.record_size) {
             24, 28, 32 => {},
             else => return ReadError.UnknownRecordSize,
+        }
+
+        switch (metadata.ip_version) {
+            4, 6 => {},
+            else => return ReadError.UnknownIPVersion,
         }
 
         const search_tree_size = std.math.mul(
@@ -665,7 +671,7 @@ pub const Reader = struct {
 
     fn readNode(self: *const Reader, node_number: usize, index: usize) usize {
         const src = self.src;
-        const base_offset: usize = node_number * self.metadata.record_size / 4;
+        const base_offset: usize = node_number * (self.metadata.record_size / 4);
 
         return switch (self.metadata.record_size) {
             24 => {
@@ -880,6 +886,12 @@ pub const EntryIterator = struct {
                     .network = current.ip_bytes.network(current.prefix_len),
                 };
             } else if (current.node < self.node_count) {
+                // A valid tree resolves within bit_count levels.
+                // A deeper internal node is cyclic or malformed.
+                if (current.prefix_len >= bit_count) {
+                    return ReadError.CorruptedTree;
+                }
+
                 // In order traversal of the children on the right (1-bit).
                 var node = reader.readNode(current.node, 1);
                 var right_ip_bytes = current.ip_bytes;

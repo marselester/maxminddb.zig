@@ -185,6 +185,29 @@ test "reject a database with broken pointers" {
     return error.TestExpectedBrokenPointer;
 }
 
+test "reject a database with an oversized container" {
+    const paths = [_][]const u8{
+        "test-data/bad-data/libmaxminddb/libmaxminddb-oversized-map.mmdb",
+        "test-data/bad-data/libmaxminddb/libmaxminddb-oversized-array.mmdb",
+    };
+    for (paths) |path| {
+        var db = try Reader.mmap(allocator, io, path, .{});
+        defer db.close();
+
+        var it = try db.scan(any.Value, allocator, net.Network.all_ipv4, .{});
+        try expectError(error.InvalidDataOffset, it.next());
+    }
+}
+
+test "reject a database with an invalid data record offset" {
+    try expectError(error.UnsupportedFieldType, Reader.mmap(
+        allocator,
+        io,
+        "test-data/bad-data/maxminddb-golang/invalid-data-record-offset.mmdb",
+        .{},
+    ));
+}
+
 test "decode every MMDB data type" {
     var db = try Reader.mmap(
         allocator,

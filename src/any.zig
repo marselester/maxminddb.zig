@@ -54,6 +54,9 @@ fn decodeAny(
             try d.descend();
             defer d.ascend();
 
+            // Cap the entry count by the bytes remaining.
+            try d.requireBytes(field.size);
+
             const items = try allocator.alloc(Value, field.size);
             for (items) |*item| {
                 item.* = try decodeAny(d, allocator, null);
@@ -63,6 +66,9 @@ fn decodeAny(
         .Map => {
             try d.descend();
             defer d.ascend();
+
+            // Cap the entry count by the bytes remaining.
+            try d.requireBytes(field.size);
 
             const entries = try allocator.alloc(Value.Entry, field.size);
             var n: usize = 0;

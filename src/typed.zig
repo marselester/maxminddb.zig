@@ -136,6 +136,9 @@ fn decodeValue(d: *decoder.Decoder, allocator: std.mem.Allocator, T: type) !T {
                     return DecodeError.ExpectedMap;
                 }
 
+                // Cap the entry count by the bytes remaining.
+                try d.requireBytes(field.size);
+
                 const entries = try allocator.alloc(DecodedType.Entry, field.size);
                 for (entries) |*e| {
                     e.key = try d.decodeStringKey();
@@ -154,6 +157,9 @@ fn decodeValue(d: *decoder.Decoder, allocator: std.mem.Allocator, T: type) !T {
                 if (field.type != .Array) {
                     return DecodeError.ExpectedArray;
                 }
+
+                // Cap the entry count by the bytes remaining.
+                try d.requireBytes(field.size);
 
                 const ChildType = std.meta.Elem(
                     std.meta.fieldInfo(DecodedType, .items).type,
