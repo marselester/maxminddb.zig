@@ -208,6 +208,15 @@ test "reject a database with an invalid data record offset" {
     ));
 }
 
+test "reject a database with an invalid map key length" {
+    try expectError(error.InvalidDataOffset, Reader.mmap(
+        allocator,
+        io,
+        "test-data/bad-data/maxminddb-golang/invalid-map-key-length.mmdb",
+        .{},
+    ));
+}
+
 test "decode every MMDB data type" {
     var db = try Reader.mmap(
         allocator,

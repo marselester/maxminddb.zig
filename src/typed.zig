@@ -104,7 +104,7 @@ fn decodeValue(d: *decoder.Decoder, allocator: std.mem.Allocator, T: type) !T {
 
     return switch (T) {
         []const u8, ?[]const u8 => if (field.type == .String or field.type == .Bytes)
-            d.decodeBytes(field.size)
+            try d.decodeBytes(field.size)
         else
             decoder.DecodeError.ExpectedStringOrBytes,
         f64, ?f64 => if (field.type == .Double) try d.decodeDouble(field.size) else DecodeError.ExpectedDouble,

@@ -131,7 +131,7 @@ pub const Decoder = struct {
             return DecodeError.ExpectedString;
         }
 
-        const key = self.decodeBytes(field.size);
+        const key = try self.decodeBytes(field.size);
         if (restore) |r| {
             self.offset = r;
         }
@@ -197,7 +197,10 @@ pub const Decoder = struct {
 
     // Decodes a variable length byte sequence containing any sort of binary data.
     // If the length is zero then this a zero-length byte sequence.
-    pub fn decodeBytes(self: *Decoder, field_size: usize) []const u8 {
+    pub fn decodeBytes(self: *Decoder, field_size: usize) DecodeError![]const u8 {
+        // Must not over-read adjacent memory into the returned slice.
+        try self.requireBytes(field_size);
+
         const offset = self.offset;
         const new_offset = offset + field_size;
         self.offset = new_offset;

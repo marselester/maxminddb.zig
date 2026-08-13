@@ -28,8 +28,8 @@ pub const Value = union(enum) {
         const payload_offset = d.offset;
 
         const v: Value = switch (field.type) {
-            .String => .{ .string = d.decodeBytes(field.size) },
-            .Bytes => .{ .bytes = d.decodeBytes(field.size) },
+            .String => .{ .string = try d.decodeBytes(field.size) },
+            .Bytes => .{ .bytes = try d.decodeBytes(field.size) },
             .Uint16 => .{ .uint16 = try d.decodeInteger(u16, field.size) },
             .Uint32 => .{ .uint32 = try d.decodeInteger(u32, field.size) },
             .Int32 => .{ .int32 = try d.decodeInteger(i32, field.size) },

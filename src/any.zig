@@ -40,8 +40,8 @@ fn decodeAny(
     }
 
     return switch (field.type) {
-        .String => .{ .string = d.decodeBytes(field.size) },
-        .Bytes => .{ .bytes = d.decodeBytes(field.size) },
+        .String => .{ .string = try d.decodeBytes(field.size) },
+        .Bytes => .{ .bytes = try d.decodeBytes(field.size) },
         .Double => .{ .double = try d.decodeDouble(field.size) },
         .Float => .{ .float = try d.decodeFloat(field.size) },
         .Uint16 => .{ .uint16 = try d.decodeInteger(u16, field.size) },
