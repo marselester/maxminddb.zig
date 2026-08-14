@@ -112,31 +112,32 @@ pub const Decoder = struct {
     // Reads a map key, following a pointer to it if present.
     // Map keys are always strings per the spec.
     pub inline fn decodeStringKey(self: *Decoder) DecodeError![]const u8 {
-        var field = try self.decodeFieldSizeAndType();
+        const field = try self.decodeFieldSizeAndType();
+        if (field.type == .String) {
+            return self.decodeBytes(field.size);
+        }
 
         // A pointer key resolves to a string elsewhere.
         // The value follows the pointer bytes,
-        // so we remember that position and rewind to it after reading the key.
-        var restore: ?usize = null;
+        // so rewind to that position after reading the key.
         if (field.type == .Pointer) {
             const target = try self.followPointer(field.size);
-
-            restore = self.offset;
+            const restore = self.offset;
             self.offset = target;
 
-            field = try self.decodeFieldSizeAndType();
+            const key_field = try self.decodeFieldSizeAndType();
+            if (key_field.type != .String) {
+                return DecodeError.ExpectedString;
+            }
+
+            const key = try self.decodeBytes(key_field.size);
+
+            self.offset = restore;
+
+            return key;
         }
 
-        if (field.type != .String) {
-            return DecodeError.ExpectedString;
-        }
-
-        const key = try self.decodeBytes(field.size);
-        if (restore) |r| {
-            self.offset = r;
-        }
-
-        return key;
+        return DecodeError.ExpectedString;
     }
 
     // Skips a value in the database without decoding it.
