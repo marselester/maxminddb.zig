@@ -1491,3 +1491,173 @@ test "cache decode with field filtering" {
 test "cache rejects size 0" {
     try expectError(error.InvalidCacheSize, Cache(geolite2.City).init(allocator, .{ .size = 0 }));
 }
+
+test "entryField with an empty path returns a map at the record root" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
+    const entry = (try db.find(ip, .{})).?;
+
+    const root = (try db.entryField(entry, &.{})).?;
+    try expect(root == .map);
+    try expect(root.map.len > 0);
+}
+
+test "entryField walks map-key paths to each scalar variant" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
+    const entry = (try db.find(ip, .{})).?;
+
+    const iso = (try db.entryField(entry, &.{ "country", "iso_code" })).?;
+    try expect(iso == .string);
+    try expectEqualStrings("SE", iso.string);
+
+    const gid = (try db.entryField(entry, &.{ "country", "geoname_id" })).?;
+    try expect(gid == .uint32);
+    try expectEqual(2661886, gid.uint32);
+
+    const in_eu = (try db.entryField(entry, &.{ "country", "is_in_european_union" })).?;
+    try expect(in_eu == .boolean);
+    try expectEqual(true, in_eu.boolean);
+
+    const lat = (try db.entryField(entry, &.{ "location", "latitude" })).?;
+    try expect(lat == .double);
+    try expectEqual(@as(f64, 58.4167), lat.double);
+}
+
+test "entryField returns null for unresolved paths" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
+    const entry = (try db.find(ip, .{})).?;
+
+    try expectEqual(null, try db.entryField(entry, &.{"nonexistent"}));
+    try expectEqual(null, try db.entryField(entry, &.{ "country", "nonexistent" }));
+    try expectEqual(null, try db.entryField(entry, &.{ "country", "iso_code", "nope" }));
+}
+
+test "Array.at and Array.len" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
+    const entry = (try db.find(ip, .{})).?;
+
+    const subs_v = (try db.entryField(entry, &.{"subdivisions"})).?;
+    try expect(subs_v == .array);
+    const subs = subs_v.array;
+    try expectEqual(1, subs.len);
+
+    const first_v = (try subs.at(0)).?;
+    try expect(first_v == .map);
+    const first = first_v.map;
+
+    const sub_iso = (try first.get("iso_code")).?;
+    try expect(sub_iso == .string);
+    try expectEqualStrings("E", sub_iso.string);
+
+    try expectEqual(null, try subs.at(1));
+}
+
+test "lazy Map.get on a nested map" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/GeoLite2-City-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
+    const entry = (try db.find(ip, .{})).?;
+
+    const names_v = (try db.entryField(entry, &.{ "country", "names" })).?;
+    try expect(names_v == .map);
+    const names = names_v.map;
+
+    const en = (try names.get("en")).?;
+    try expect(en == .string);
+    try expectEqualStrings("Sweden", en.string);
+
+    try expectEqual(null, try names.get("zz"));
+}
+
+test "entryField indexes into arrays" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/MaxMind-DB-test-decoder.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    const ip = try std.Io.net.IpAddress.parse("1.1.1.0", 0);
+    const entry = (try db.find(ip, .{})).?;
+
+    const tests = [_]struct {
+        path: []const []const u8,
+        want: ?u32,
+    }{
+        .{
+            .path = &.{ "array", "2" },
+            .want = 3,
+        },
+        .{
+            .path = &.{ "array", "-1" },
+            .want = 3,
+        },
+        .{
+            .path = &.{ "array", "-3" },
+            .want = 1,
+        },
+        .{
+            .path = &.{ "map", "mapX", "arrayX", "0" },
+            .want = 7,
+        },
+        .{
+            .path = &.{ "array", "9" },
+            .want = null,
+        },
+        .{
+            .path = &.{ "array", "-4" },
+            .want = null,
+        },
+        .{
+            .path = &.{ "array", "x" },
+            .want = null,
+        },
+        .{
+            .path = &.{ "array", "99999999999999999999" },
+            .want = null,
+        },
+    };
+
+    for (tests) |tc| {
+        const got = try db.entryField(entry, tc.path);
+        try expectEqual(tc.want, if (got) |v| v.uint32 else null);
+    }
+}

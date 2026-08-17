@@ -100,10 +100,9 @@ pub const Array = struct {
     }
 };
 
-/// Walks a path starting at offset in src.
-/// Returns the value at the terminal or null if any step does not resolve.
-/// The container type at each step decides the meaning,
-/// so a numeric string is a key inside a map and an index inside an array.
+/// Walks a path from offset in src.
+/// Each step is a map key or an array index ("-1" is the last element).
+/// Returns null if any step does not resolve.
 pub fn walkPath(src: []const u8, offset: usize, path: []const []const u8) !?Value {
     var d = decoder.Decoder{
         .src = src,
@@ -120,7 +119,7 @@ pub fn walkPath(src: []const u8, offset: usize, path: []const []const u8) !?Valu
                 }
             },
             .Array => {
-                const index = std.fmt.parseInt(usize, step, 10) catch return null;
+                const index = arrayIndex(step, field.size) orelse return null;
                 if (!try seekIndex(&d, field.size, index)) {
                     return null;
                 }
@@ -130,6 +129,20 @@ pub fn walkPath(src: []const u8, offset: usize, path: []const []const u8) !?Valu
     }
 
     return try Value.decode(&d);
+}
+
+/// Parses a decimal array index for an array of len elements,
+/// resolving a negative value from the end (-1 is the last element).
+/// Returns null on a non-numeric step or a negative index before the start.
+pub fn arrayIndex(step: []const u8, len: usize) ?usize {
+    const i = std.fmt.parseInt(isize, step, 10) catch return null;
+    if (i >= 0) {
+        return @intCast(i);
+    }
+
+    // Negative counts from the end: -1 is the last element.
+    const back: usize = @abs(i);
+    return if (back > len) null else len - back;
 }
 
 /// Advances the decoder to the value whose key matches,
