@@ -13,6 +13,8 @@ pub const ReadError = error{
     CorruptedTree,
     UnknownRecordSize,
     UnknownIPVersion,
+    UnsupportedBinaryFormat,
+    EmptyDatabase,
     InvalidPrefixLen,
     InvalidIndexBits,
     IndexAlreadyBuilt,
@@ -171,6 +173,14 @@ pub const Reader = struct {
         options: Options,
     ) !Reader {
         const metadata = try Metadata.decode(arena.allocator(), src);
+
+        if (metadata.binary_format_major_version != 2) {
+            return ReadError.UnsupportedBinaryFormat;
+        }
+
+        if (metadata.node_count == 0) {
+            return ReadError.EmptyDatabase;
+        }
 
         switch (metadata.record_size) {
             24, 28, 32 => {},

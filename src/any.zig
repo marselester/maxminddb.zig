@@ -67,8 +67,8 @@ fn decodeAny(
             try d.descend();
             defer d.ascend();
 
-            // Cap the entry count by the bytes remaining.
-            try d.requireBytes(field.size);
+            // Cap the entry count by half the bytes remaining.
+            try d.requireBytes(field.size * 2);
 
             const entries = try allocator.alloc(Value.Entry, field.size);
             var n: usize = 0;
