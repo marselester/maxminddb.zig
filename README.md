@@ -1,7 +1,7 @@
 # Zig MaxMind DB Reader
 
 This Zig package reads the [MaxMind DB format](https://maxmind.github.io/MaxMind-DB/).
-It's based on [maxminddb-rust](https://github.com/oschwald/maxminddb-rust) implementation.
+It's based on the [maxminddb-rust](https://github.com/oschwald/maxminddb-rust) implementation.
 
 ⚠️ Note that strings such as `geolite2.City.postal.code` are backed by the memory of an open database file.
 You must create a copy if you wish to continue using the string when the database is closed.
@@ -47,15 +47,15 @@ See [examples](./examples/).
 
 ### Lookup
 
-Use `lookup()` for IP lookups in basic cases.
-It returns `Result` or null when the IP is not found or the record is empty.
+Use `query()` for IP lookups in basic cases.
+It returns `Decoded` or null when the IP is not found or the record is empty.
 Each result owns an arena so you should call `result.deinit()` to free it.
 
 ```zig
 var db = try maxminddb.Reader.mmap(allocator, io, db_path, .{});
 defer db.close();
 
-if (try db.lookup(maxminddb.geolite2.City, allocator, ip, .{})) |result| {
+if (try db.query(maxminddb.geolite2.City, allocator, ip, .{})) |result| {
     defer result.deinit();
     std.debug.print("{f} {s}\n", .{ result.network, result.value.city.names.?.get("en").? });
 }
@@ -66,7 +66,7 @@ Use `.only` to decode only the top-level fields you need.
 ```zig
 const fields = &.{ "city", "country" };
 
-if (try db.lookup(maxminddb.geolite2.City, allocator, ip, .{ .only = fields })) |result| {
+if (try db.query(maxminddb.geolite2.City, allocator, ip, .{ .only = fields })) |result| {
     defer result.deinit();
     std.debug.print("{f} {s}\n", .{ result.network, result.value.city.names.?.get("en").? });
 }
@@ -83,7 +83,7 @@ const MyCity = struct {
     } = .{},
 };
 
-if (try db.lookup(MyCity, allocator, ip, .{})) |result| {
+if (try db.query(MyCity, allocator, ip, .{})) |result| {
     defer result.deinit();
     std.debug.print("{s}\n", .{result.value.city.names.en});
 }
@@ -92,14 +92,14 @@ if (try db.lookup(MyCity, allocator, ip, .{})) |result| {
 Use `any.Value` to decode any record without knowing the schema.
 
 ```zig
-if (try db.lookup(maxminddb.any.Value, allocator, ip, .{})) |result| {
+if (try db.query(maxminddb.any.Value, allocator, ip, .{})) |result| {
     defer result.deinit();
     // Formats as compact JSON.
     std.debug.print("{f}\n", .{result.value});
 }
 ```
 
-Use `find()` and `Cache.decode()` for repeated lookups, e.g., in web services.
+Use `lookup()` and `Cache.decode()` for repeated lookups, e.g., in web services.
 The cache avoids re-decoding when different IPs resolve to the same record.
 No per-lookup arena allocation because values are owned by the cache.
 
@@ -114,23 +114,23 @@ const decode_options: maxminddb.Reader.DecodeOptions = .{
 };
 
 for (ips) |ip| {
-    const entry = try db.find(ip, .{}) orelse continue;
-    const value = try cache.decode(&db, entry, decode_options);
-    std.debug.print("{f} {s}\n", .{ entry.network, value.city.names.?.get("en").? });
+    const result = try db.lookup(ip, .{}) orelse continue;
+    const value = try cache.decode(&db, result, decode_options);
+    std.debug.print("{f} {s}\n", .{ result.network, value.city.names.?.get("en").? });
 }
 ```
 
-Use `find()` to check if an IP exists without decoding.
+Use `lookup()` to check if an IP exists without decoding.
 
 ```zig
-if (try db.find(ip, .{})) |entry| {
-    std.debug.print("found in {f}\n", .{entry.network});
+if (try db.lookup(ip, .{})) |result| {
+    std.debug.print("found in {f}\n", .{result.network});
 }
 ```
 
 Build the IPv4 index to speed up lookups if you have a long-lived `Reader` with many lookups.
 It adds a one-time build cost (~1-4ms warm, ~10-120ms with page faults)
-and uses ~320KB at depth 16, or 12 (~20KB) for constrained devices.
+and uses ~320KB at depth 16, or ~20KB at depth 12 for constrained devices.
 It's not worth creating an index for short-lived readers.
 
 ```zig
@@ -147,7 +147,7 @@ defer arena.deinit();
 const arena_allocator = arena.allocator();
 
 for (ips) |ip| {
-    if (try db.lookup(maxminddb.geolite2.City, arena_allocator, ip, .{})) |result| {
+    if (try db.query(maxminddb.geolite2.City, arena_allocator, ip, .{})) |result| {
         std.debug.print("{f} {s}\n", .{ result.network, result.value.city.names.?.get("en").? });
     }
     _ = arena.reset(.retain_capacity);
@@ -160,10 +160,11 @@ the cached values will be corrupted.
 ### Scan
 
 Use `scan()` to iterate over networks in the database.
+Pass `null` for the whole database, or a `Network` to scan one range.
 Each result owns an arena so you should call `deinit()` to free it.
 
 ```zig
-var it = try db.scan(maxminddb.any.Value, allocator, maxminddb.Network.all_ipv6, .{});
+var it = try db.scan(maxminddb.any.Value, allocator, null, .{});
 
 while (try it.next()) |item| {
     defer item.deinit();
@@ -171,7 +172,7 @@ while (try it.next()) |item| {
 }
 ```
 
-Use `entries()` and `Cache.decode()` for faster scans, see [Benchmarks](#benchmarks) section.
+Use `networks()` and `Cache.decode()` for faster scans, see [Benchmarks](#benchmarks) section.
 Adjacent networks often share the same record so the cache avoids re-decoding them.
 Same cache caveat applies, i.e., use a consistent `.only` field set.
 
@@ -179,32 +180,32 @@ Same cache caveat applies, i.e., use a consistent `.only` field set.
 var cache = try maxminddb.Cache(maxminddb.any.Value).init(allocator, .{});
 defer cache.deinit();
 
-var it = try db.entries(maxminddb.Network.all_ipv6, .{});
+var it = try db.networks(null, .{});
 
-while (try it.next()) |entry| {
-    const value = try cache.decode(&db, entry, .{});
-    std.debug.print("{f} {f}\n", .{ entry.network, value });
+while (try it.next()) |result| {
+    const value = try cache.decode(&db, result, .{});
+    std.debug.print("{f} {f}\n", .{ result.network, value });
 }
 ```
 
 Use `decodeUnmanaged()` with a reusable arena when you only need a subset of networks,
-filter on the cheap `entry.network` before paying the decode cost:
+filter on the cheap `result.network` before paying the decode cost:
 
 ```zig
 var arena = std.heap.ArenaAllocator.init(allocator);
 defer arena.deinit();
 const arena_allocator = arena.allocator();
 
-var it = try db.entries(maxminddb.Network.all_ipv4, .{});
+var it = try db.networks(null, .{});
 
-while (try it.next()) |entry| {
+while (try it.next()) |result| {
     // Skip decoding.
-    if (entry.network.prefix_len < 24) {
+    if (result.network.prefix_len < 24) {
         continue;
     }
 
-    const value = try db.decodeUnmanaged(maxminddb.any.Value, arena_allocator, entry, .{});
-    std.debug.print("{f} {f}\n", .{ entry.network, value });
+    const value = try db.decodeUnmanaged(maxminddb.any.Value, arena_allocator, result, .{});
+    std.debug.print("{f} {f}\n", .{ result.network, value });
     _ = arena.reset(.retain_capacity);
 }
 ```
@@ -222,7 +223,7 @@ The impact of each optimization depends on the database:
   Databases with few unique records benefit most.
   Databases with millions of unique records benefit least because
   almost every lookup is a cache miss.
-  For scans, the cache hit rate is much higher because adjacent entries
+  For scans, the cache hit rate is much higher because adjacent networks
   in the tree often share the same record.
 - `Cache` + `.only`: `.only` helps on cache misses when decoding fewer fields.
 

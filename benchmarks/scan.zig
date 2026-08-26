@@ -33,15 +33,10 @@ pub fn main(init: std.process.Init) !void {
         db.metadata.database_type,
     });
 
-    const network = if (db.metadata.ip_version == 4)
-        maxminddb.Network.all_ipv4
-    else
-        maxminddb.Network.all_ipv6;
-
     std.debug.print("Starting benchmark...\n", .{});
     const timer_start = std.Io.Clock.Timestamp.now(io, .awake);
 
-    var it = try db.scan(maxminddb.any.Value, allocator, network, .{ .only = fields });
+    var it = try db.scan(maxminddb.any.Value, allocator, null, .{ .only = fields });
 
     var n: usize = 0;
     while (try it.next()) |item| {

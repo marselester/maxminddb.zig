@@ -42,8 +42,9 @@ pub const FieldType = enum {
     Float,
 };
 
-// DataField represents the field's data type and payload size decoded from the database.
-pub const DataField = struct {
+// FieldHeader represents the field's data type and payload size decoded from the database.
+// The payload itself starts at the decoder's offset.
+pub const FieldHeader = struct {
     size: usize,
     type: FieldType,
 };
@@ -89,6 +90,7 @@ pub const Decoder = struct {
     // Resolves a pointer to its target offset.
     // Rejects a target that lands past the data section or that begins with another pointer:
     // both indicate a corrupt DB.
+    // field_size is the raw 5 control-byte bits, as in decodePointer.
     pub fn followPointer(self: *Decoder, field_size: usize) DecodeError!usize {
         // Charge the traversal budget per pointer followed.
         if (self.budget == 0) {
@@ -101,8 +103,8 @@ pub const Decoder = struct {
             return DecodeError.InvalidPointer;
         }
 
-        const cb: ControlByte = @bitCast(self.src[next]);
-        if (cb.type == @intFromEnum(FieldType.Pointer)) {
+        const control: ControlByte = @bitCast(self.src[next]);
+        if (control.type == @intFromEnum(FieldType.Pointer)) {
             return DecodeError.InvalidPointer;
         }
 
@@ -112,7 +114,7 @@ pub const Decoder = struct {
     // Reads a map key, following a pointer to it if present.
     // Map keys are always strings per the spec.
     pub inline fn decodeStringKey(self: *Decoder) DecodeError![]const u8 {
-        const field = try self.decodeFieldSizeAndType();
+        const field = try self.decodeFieldHeader();
         if (field.type == .String) {
             return self.decodeBytes(field.size);
         }
@@ -125,7 +127,7 @@ pub const Decoder = struct {
             const restore = self.offset;
             self.offset = target;
 
-            const key_field = try self.decodeFieldSizeAndType();
+            const key_field = try self.decodeFieldHeader();
             if (key_field.type != .String) {
                 return DecodeError.ExpectedString;
             }
@@ -144,7 +146,7 @@ pub const Decoder = struct {
     // This is used when the database has fields that don't exist in the target struct
     // or are excluded by field name filtering.
     pub fn skipValue(self: *Decoder) !void {
-        const field = try self.decodeFieldSizeAndType();
+        const field = try self.decodeFieldHeader();
 
         switch (field.type) {
             // Consume the pointer bytes, don't follow to its payload.
@@ -170,7 +172,7 @@ pub const Decoder = struct {
                     try self.skipValue();
                 }
             },
-            // For other types, just advance the offset.
+            // For other types, just advance the offset past the payload.
             else => {
                 self.offset += field.size;
             },
@@ -182,6 +184,8 @@ pub const Decoder = struct {
     // It is illegal for a pointer to point to another pointer.
     // Pointer values start from the beginning of the data section, not the beginning of the file.
     // Pointers in the metadata start from the beginning of the metadata section.
+    // field_size is the raw 5 control-byte bits, NOT a payload byte count as in
+    // the value decoders: bits 3-4 give the pointer size, bits 0-2 its high bits.
     pub fn decodePointer(self: *Decoder, field_size: usize) usize {
         const pointer_value_offset = [_]usize{ 0, 0, 2048, 526_336, 0 };
         const pointer_size = ((field_size >> 3) & 0x3) + 1;
@@ -292,11 +296,11 @@ pub const Decoder = struct {
 
     // Reads a field header, following any pointer chain to the target's payload,
     // and returns the resolved (non-pointer) field.
-    pub inline fn resolveField(self: *Decoder) DecodeError!DataField {
-        var field = try self.decodeFieldSizeAndType();
+    pub inline fn resolveField(self: *Decoder) DecodeError!FieldHeader {
+        var field = try self.decodeFieldHeader();
         while (field.type == .Pointer) {
             self.offset = try self.followPointer(field.size);
-            field = try self.decodeFieldSizeAndType();
+            field = try self.decodeFieldHeader();
         }
 
         return field;
@@ -309,21 +313,21 @@ pub const Decoder = struct {
     }
 
     // Decodes a control byte into a field type and payload size.
-    pub fn decodeFieldSizeAndType(self: *Decoder) !DataField {
-        const cb: ControlByte = @bitCast(self.src[self.offset]);
+    pub fn decodeFieldHeader(self: *Decoder) !FieldHeader {
+        const control: ControlByte = @bitCast(self.src[self.offset]);
         self.offset += 1;
 
         // Non-extended type, size fits in the 5 control-byte bits.
-        if (cb.type != 0 and cb.size < 29) {
+        if (control.type != 0 and control.size < 29) {
             @branchHint(.likely);
             return .{
-                .size = cb.size,
-                .type = @enumFromInt(cb.type),
+                .size = control.size,
+                .type = @enumFromInt(control.type),
             };
         }
 
         // Extended type or size-extension bytes.
-        var field_type: FieldType = @enumFromInt(cb.type);
+        var field_type: FieldType = @enumFromInt(control.type);
         if (field_type == FieldType.Extended) {
             // Extended types are 7 (Map) through 15 (Float), so valid extended byte values are 0-8.
             const ext_byte = self.src[self.offset];
@@ -336,15 +340,15 @@ pub const Decoder = struct {
         }
 
         return .{
-            .size = self.decodeFieldSize(cb, field_type),
+            .size = self.decodeFieldSize(control, field_type),
             .type = field_type,
         };
     }
 
     // Decodes the field size in bytes, see https://maxmind.github.io/MaxMind-DB/#payload-size.
-    fn decodeFieldSize(self: *Decoder, cb: ControlByte, field_type: FieldType) usize {
+    fn decodeFieldSize(self: *Decoder, control: ControlByte, field_type: FieldType) usize {
         // Pointer types use the raw 5-bit size without extension.
-        const field_size: usize = cb.size;
+        const field_size: usize = control.size;
         if (field_type == FieldType.Pointer) {
             return field_size;
         }
@@ -385,10 +389,6 @@ test "decodeFieldSize returns raw size for pointer type" {
     // logic (which triggers at values 29, 30, 31) because they encode pointer
     // metadata, not a payload size.
     //
-    // Previously decodeFieldSize had a dead code check for FieldType.Extended
-    // (which was already resolved by decodeFieldSizeAndType before this call).
-    // It was replaced with FieldType.Pointer to skip the size extension.
-    //
     // This test uses SS=11, VVV=101 giving the 5-bit value 11_101=29.
     // Without the Pointer check, size extension would read 0xAA as an extra
     // byte, corrupt the size, and advance the offset.
@@ -396,11 +396,11 @@ test "decodeFieldSize returns raw size for pointer type" {
         .src = &.{ 0b001_11_101, 0xAA, 0xBB, 0xCC },
         .offset = 0,
     };
-    const cb: ControlByte = .{
+    const control: ControlByte = .{
         .type = 0b001,
         .size = 0b11_101,
     };
-    const size = d.decodeFieldSize(cb, .Pointer);
+    const size = d.decodeFieldSize(control, .Pointer);
     try std.testing.expectEqual(29, size);
     // Offset must not advance, i.e., no extra bytes read for size extension.
     try std.testing.expectEqual(0, d.offset);

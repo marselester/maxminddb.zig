@@ -8,14 +8,15 @@ const net = @import("net.zig");
 const filter = @import("filter.zig");
 
 pub const any = @import("any.zig");
+pub const lazy = @import("lazy.zig");
 pub const geolite2 = @import("geolite2.zig");
 pub const geoip2 = @import("geoip2.zig");
 
 pub const Error = reader.ReadError || decoder.DecodeError || typed.DecodeError;
 pub const Reader = reader.Reader;
 pub const Metadata = reader.Metadata;
-pub const ResultIterator = reader.ResultIterator;
-pub const EntryIterator = reader.EntryIterator;
+pub const DecodedIterator = reader.DecodedIterator;
+pub const NetworkIterator = reader.NetworkIterator;
 pub const Cache = reader.Cache;
 pub const Network = net.Network;
 pub const Map = collection.Map;
@@ -155,12 +156,7 @@ test "reject data nested past the depth limit" {
         var db = try Reader.mmap(allocator, io, path, .{});
         defer db.close();
 
-        const network = if (db.metadata.ip_version == 4)
-            net.Network.all_ipv4
-        else
-            net.Network.all_ipv6;
-
-        var it = try db.scan(any.Value, allocator, network, .{});
+        var it = try db.scan(any.Value, allocator, null, .{});
         try expectError(error.TooDeep, it.next());
     }
 }
@@ -229,7 +225,7 @@ test "decode every MMDB data type" {
     // 1.1.1.0 holds a mid-range value of every type.
     {
         const ip = try std.Io.net.IpAddress.parse("1.1.1.0", 0);
-        const result = (try db.lookup(any.Value, allocator, ip, .{})).?;
+        const result = (try db.query(any.Value, allocator, ip, .{})).?;
         defer result.deinit();
         const v = result.value;
 
@@ -271,7 +267,7 @@ test "decode every MMDB data type" {
     // 255.255.255.255 holds the type maxima plus float/double infinity.
     {
         const ip = try std.Io.net.IpAddress.parse("255.255.255.255", 0);
-        const result = (try db.lookup(any.Value, allocator, ip, .{})).?;
+        const result = (try db.query(any.Value, allocator, ip, .{})).?;
         defer result.deinit();
         const v = result.value;
 
@@ -356,7 +352,7 @@ test "typed decode surfaces a type error for each mismatched field" {
     inline for (tests) |tc| {
         try expectError(
             tc[1],
-            db.lookup(tc[0], allocator, ip, .{}),
+            db.query(tc[0], allocator, ip, .{}),
         );
     }
 }
@@ -375,7 +371,7 @@ test "Reader.open" {
     defer db.close();
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.lookup(geolite2.City, allocator, ip, .{})).?;
+    const got = (try db.query(geolite2.City, allocator, ip, .{})).?;
     defer got.deinit();
 
     try expectEqualStrings("SE", got.value.country.iso_code);
@@ -399,7 +395,7 @@ test "reject invalid prefix length" {
     );
     defer db.close();
 
-    try expectError(error.InvalidPrefixLen, db.entries(.{
+    try expectError(error.InvalidPrefixLen, db.networks(.{
         .ip = try std.Io.net.IpAddress.parse("0.0.0.0", 0),
         .prefix_len = 33,
     }, .{}));
@@ -426,7 +422,7 @@ test "reject IPv6 on IPv4-only database" {
     try expectError(error.IPv6AddressInIPv4Database, it);
 
     const ip = try std.Io.net.IpAddress.parse("2001:db8::1", 0);
-    const result = db.lookup(any.Value, allocator, ip, .{});
+    const result = db.query(any.Value, allocator, ip, .{});
     try expectError(error.IPv6AddressInIPv4Database, result);
 }
 
@@ -472,7 +468,7 @@ test "GeoLite2 Country" {
     try expectEqual(DatabaseType.geolite_country, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.lookup(geolite2.Country, allocator, ip, .{})).?;
+    const got = (try db.query(geolite2.Country, allocator, ip, .{})).?;
     defer got.deinit();
 
     try expectEqualStrings("EU", got.value.continent.code);
@@ -505,7 +501,7 @@ test "GeoLite2 Country" {
 
     // Verify network masking for an IPv6 lookup.
     const ipv6 = try std.Io.net.IpAddress.parse("2001:218:ffff:ffff:ffff:ffff:ffff:ffff", 0);
-    const got_v6 = (try db.lookup(geolite2.Country, allocator, ipv6, .{})).?;
+    const got_v6 = (try db.query(geolite2.Country, allocator, ipv6, .{})).?;
     defer got_v6.deinit();
 
     try expectEqualStrings("JP", got_v6.value.country.iso_code);
@@ -527,7 +523,7 @@ test "GeoLite2 City" {
     try expectEqual(DatabaseType.geolite_city, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.lookup(geolite2.City, allocator, ip, .{})).?;
+    const got = (try db.query(geolite2.City, allocator, ip, .{})).?;
     defer got.deinit();
 
     try expectEqual(2694762, got.value.city.geoname_id);
@@ -600,7 +596,7 @@ test "GeoLite2 ASN" {
     try expectEqual(DatabaseType.geolite_asn, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.lookup(geolite2.ASN, allocator, ip, .{})).?;
+    const got = (try db.query(geolite2.ASN, allocator, ip, .{})).?;
     defer got.deinit();
 
     const want = geolite2.ASN{
@@ -626,7 +622,7 @@ test "GeoIP2 Country" {
     try expectEqual(DatabaseType.geoip_country, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.lookup(geoip2.Country, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.Country, allocator, ip, .{})).?;
     defer got.deinit();
 
     try expectEqualStrings("EU", got.value.continent.code);
@@ -665,7 +661,7 @@ test "GeoIP2 Country" {
     );
 
     const ip2 = try std.Io.net.IpAddress.parse("214.1.1.0", 0);
-    const got2 = (try db.lookup(geoip2.Country, allocator, ip2, .{})).?;
+    const got2 = (try db.query(geoip2.Country, allocator, ip2, .{})).?;
     defer got2.deinit();
 
     try expectEqual(true, got2.value.traits.is_anycast);
@@ -681,7 +677,7 @@ test "GeoIP2 Country RepresentedCountry" {
     defer db.close();
 
     const ip = try std.Io.net.IpAddress.parse("202.196.224.0", 0);
-    const got = (try db.lookup(geoip2.Country, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.Country, allocator, ip, .{})).?;
     defer got.deinit();
 
     try expectEqualStrings("AS", got.value.continent.code);
@@ -710,7 +706,7 @@ test "GeoIP2 City" {
     try expectEqual(DatabaseType.geoip_city, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.lookup(geoip2.City, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.City, allocator, ip, .{})).?;
     defer got.deinit();
 
     try expectEqual(2694762, got.value.city.geoname_id);
@@ -778,7 +774,7 @@ test "GeoIP2 City" {
     );
 
     const ip2 = try std.Io.net.IpAddress.parse("214.1.1.0", 0);
-    const got2 = (try db.lookup(geoip2.City, allocator, ip2, .{})).?;
+    const got2 = (try db.query(geoip2.City, allocator, ip2, .{})).?;
     defer got2.deinit();
 
     try expectEqual(true, got2.value.traits.is_anycast);
@@ -796,7 +792,7 @@ test "GeoIP2 Enterprise" {
     try expectEqual(DatabaseType.geoip_enterprise, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("74.209.24.0", 0);
-    const got = (try db.lookup(geoip2.Enterprise, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.Enterprise, allocator, ip, .{})).?;
     defer got.deinit();
 
     try expectEqual(11, got.value.city.confidence);
@@ -879,7 +875,7 @@ test "GeoIP2 Enterprise" {
     );
 
     const ip2 = try std.Io.net.IpAddress.parse("214.1.1.0", 0);
-    const got2 = (try db.lookup(geoip2.Enterprise, allocator, ip2, .{})).?;
+    const got2 = (try db.query(geoip2.Enterprise, allocator, ip2, .{})).?;
     defer got2.deinit();
 
     try expectEqual(true, got2.value.traits.is_anycast);
@@ -897,7 +893,7 @@ test "GeoIP2 ISP" {
     try expectEqual(DatabaseType.geoip_isp, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("149.101.100.0", 0);
-    const got = (try db.lookup(geoip2.ISP, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.ISP, allocator, ip, .{})).?;
     defer got.deinit();
 
     const want = geoip2.ISP{
@@ -923,7 +919,7 @@ test "GeoIP2 Connection-Type" {
     try expectEqual(DatabaseType.geoip_connection_type, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("96.1.20.112", 0);
-    const got = (try db.lookup(geoip2.ConnectionType, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.ConnectionType, allocator, ip, .{})).?;
     defer got.deinit();
 
     const want = geoip2.ConnectionType{
@@ -944,7 +940,7 @@ test "GeoIP2 Anonymous-IP" {
     try expectEqual(DatabaseType.geoip_anonymous_ip, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("81.2.69.0", 0);
-    const got = (try db.lookup(geoip2.AnonymousIP, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.AnonymousIP, allocator, ip, .{})).?;
     defer got.deinit();
 
     const want = geoip2.AnonymousIP{
@@ -970,7 +966,7 @@ test "GeoIP Anonymous-Plus" {
     try expectEqual(DatabaseType.geoip_anonymous_plus, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("1.2.0.1", 0);
-    const got = (try db.lookup(geoip2.AnonymousPlus, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.AnonymousPlus, allocator, ip, .{})).?;
     defer got.deinit();
 
     const want = geoip2.AnonymousPlus{
@@ -995,7 +991,7 @@ test "GeoIP2 DensityIncome" {
     try expectEqual(DatabaseType.geoip_densityincome, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("5.83.124.123", 0);
-    const got = (try db.lookup(geoip2.DensityIncome, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.DensityIncome, allocator, ip, .{})).?;
     defer got.deinit();
 
     const want = geoip2.DensityIncome{
@@ -1017,7 +1013,7 @@ test "GeoIP2 Domain" {
     try expectEqual(DatabaseType.geoip_domain, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("66.92.80.123", 0);
-    const got = (try db.lookup(geoip2.Domain, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.Domain, allocator, ip, .{})).?;
     defer got.deinit();
 
     const want = geoip2.Domain{
@@ -1038,7 +1034,7 @@ test "GeoIP2 IP-Risk" {
     try expectEqual(DatabaseType.geoip_ip_risk, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("6.1.2.1", 0);
-    const got = (try db.lookup(geoip2.IPRisk, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.IPRisk, allocator, ip, .{})).?;
     defer got.deinit();
 
     const want = geoip2.IPRisk{
@@ -1052,7 +1048,7 @@ test "GeoIP2 IP-Risk" {
     try expectEqualDeep(want, got.value);
 
     const ip2 = try std.Io.net.IpAddress.parse("214.2.3.5", 0);
-    const got2 = (try db.lookup(geoip2.IPRisk, allocator, ip2, .{})).?;
+    const got2 = (try db.query(geoip2.IPRisk, allocator, ip2, .{})).?;
     defer got2.deinit();
 
     const want2 = geoip2.IPRisk{
@@ -1077,7 +1073,7 @@ test "GeoIP2 Static-IP-Score" {
     try expectEqual(DatabaseType.geoip_static_ip_score, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("1.2.3.4", 0);
-    const got = (try db.lookup(geoip2.StaticIPScore, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.StaticIPScore, allocator, ip, .{})).?;
     defer got.deinit();
 
     const want = geoip2.StaticIPScore{
@@ -1098,7 +1094,7 @@ test "GeoIP2 User-Count" {
     try expectEqual(DatabaseType.geoip_user_count, DatabaseType.new(db.metadata.database_type));
 
     const ip = try std.Io.net.IpAddress.parse("1.2.3.4", 0);
-    const got = (try db.lookup(geoip2.UserCount, allocator, ip, .{})).?;
+    const got = (try db.query(geoip2.UserCount, allocator, ip, .{})).?;
     defer got.deinit();
 
     const want = geoip2.UserCount{
@@ -1108,7 +1104,7 @@ test "GeoIP2 User-Count" {
     try expectEqualDeep(want, got.value);
 }
 
-test "lookup with field name filtering" {
+test "query with field name filtering" {
     var db = try Reader.mmap(
         allocator,
         io,
@@ -1119,7 +1115,7 @@ test "lookup with field name filtering" {
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
 
-    const got = (try db.lookup(
+    const got = (try db.query(
         geolite2.City,
         allocator,
         ip,
@@ -1139,7 +1135,7 @@ test "lookup with field name filtering" {
     try expectEqualDeep(geolite2.City.Postal{}, got.value.postal);
 }
 
-test "lookup with custom record" {
+test "query with custom record" {
     var db = try Reader.mmap(
         allocator,
         io,
@@ -1158,14 +1154,14 @@ test "lookup with custom record" {
     };
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.lookup(MyCity, allocator, ip, .{})).?;
+    const got = (try db.query(MyCity, allocator, ip, .{})).?;
     defer got.deinit();
 
     try expectEqual(2694762, got.value.city.geoname_id);
     try expectEqualStrings("Linköping", got.value.city.names.en);
 }
 
-test "lookup with any.Value" {
+test "query with any.Value" {
     var db = try Reader.mmap(
         allocator,
         io,
@@ -1175,7 +1171,7 @@ test "lookup with any.Value" {
     defer db.close();
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.lookup(any.Value, allocator, ip, .{})).?;
+    const got = (try db.query(any.Value, allocator, ip, .{})).?;
     defer got.deinit();
 
     const city = got.value.get("city").?;
@@ -1189,7 +1185,7 @@ test "lookup with any.Value" {
     try expectEqual(true, country.get("is_in_european_union").?.boolean);
 }
 
-test "lookup with any.Value and field name filtering" {
+test "query with any.Value and field name filtering" {
     var db = try Reader.mmap(
         allocator,
         io,
@@ -1199,7 +1195,7 @@ test "lookup with any.Value and field name filtering" {
     defer db.close();
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.lookup(
+    const got = (try db.query(
         any.Value,
         allocator,
         ip,
@@ -1245,15 +1241,15 @@ test "IPv4 index matches non-indexed find" {
         "255.255.255.255",
     }) |ip_str| {
         const ip = try std.Io.net.IpAddress.parse(ip_str, 0);
-        const entry1 = try db.find(ip, .{});
-        const entry2 = try db_idx.find(ip, .{});
+        const result1 = try db.lookup(ip, .{});
+        const result2 = try db_idx.lookup(ip, .{});
 
-        if (entry1) |e1| {
-            const e2 = entry2.?;
-            try expectEqual(e1.pointer, e2.pointer);
-            try expectEqual(e1.network.prefix_len, e2.network.prefix_len);
+        if (result1) |r1| {
+            const r2 = result2.?;
+            try expectEqual(r1.pointer, r2.pointer);
+            try expectEqual(r1.network.prefix_len, r2.network.prefix_len);
         } else {
-            try expect(entry2 == null);
+            try expect(result2 == null);
         }
     }
 }
@@ -1329,7 +1325,7 @@ test "scan yields record when start node is a data pointer" {
     }
 }
 
-test "find skips empty records by default" {
+test "lookup skips empty records by default" {
     var db = try Reader.mmap(
         allocator,
         io,
@@ -1342,9 +1338,9 @@ test "find skips empty records by default" {
     const ip = try std.Io.net.IpAddress.parse("1.0.0.1", 0);
 
     // Empty records are skipped by default.
-    try expect(try db.find(ip, .{}) == null);
+    try expect(try db.lookup(ip, .{}) == null);
 
-    try expect((try db.find(ip, .{ .include_empty_values = true })) != null);
+    try expect((try db.lookup(ip, .{ .include_empty_values = true })) != null);
 }
 
 test "scan skips empty records" {
@@ -1396,17 +1392,17 @@ test "cache hit returns same value" {
     defer cache.deinit();
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const entry = (try db.find(ip, .{})).?;
+    const result = (try db.lookup(ip, .{})).?;
 
     // Cache miss, decodes.
-    const v1 = try cache.decode(&db, entry, .{});
+    const v1 = try cache.decode(&db, result, .{});
     try expectEqualStrings("SE", v1.country.iso_code);
 
     // Cache hit, same pointer.
-    const v2 = try cache.decode(&db, entry, .{});
+    const v2 = try cache.decode(&db, result, .{});
     try expectEqualStrings("SE", v2.country.iso_code);
 
-    const v3 = cache.get(entry.pointer).?;
+    const v3 = cache.get(result.pointer).?;
     try expectEqualStrings("SE", v3.country.iso_code);
 }
 
@@ -1419,22 +1415,22 @@ test "cache eviction" {
     );
     defer db.close();
 
-    // Size 1: every new entry evicts the previous one.
+    // Size 1: every new result evicts the previous one.
     var cache = try Cache(geolite2.City).init(allocator, .{ .size = 1 });
     defer cache.deinit();
 
     const ip1 = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const entry1 = (try db.find(ip1, .{})).?;
-    _ = try cache.decode(&db, entry1, .{});
-    try expect(cache.get(entry1.pointer) != null);
+    const result1 = (try db.lookup(ip1, .{})).?;
+    _ = try cache.decode(&db, result1, .{});
+    try expect(cache.get(result1.pointer) != null);
 
     const ip2 = try std.Io.net.IpAddress.parse("2001:218::", 0);
-    const entry2 = (try db.find(ip2, .{})).?;
-    _ = try cache.decode(&db, entry2, .{});
+    const result2 = (try db.lookup(ip2, .{})).?;
+    _ = try cache.decode(&db, result2, .{});
 
-    // entry1 is evicted.
-    try expect(cache.get(entry1.pointer) == null);
-    try expect(cache.get(entry2.pointer) != null);
+    // result1 is evicted.
+    try expect(cache.get(result1.pointer) == null);
+    try expect(cache.get(result2.pointer) != null);
 }
 
 test "cache ring buffer wrap-around" {
@@ -1453,18 +1449,18 @@ test "cache ring buffer wrap-around" {
     const ip2 = try std.Io.net.IpAddress.parse("2001:218::", 0);
     const ip3 = try std.Io.net.IpAddress.parse("216.160.83.56", 0);
 
-    const entry1 = (try db.find(ip1, .{})).?;
-    const entry2 = (try db.find(ip2, .{})).?;
-    const entry3 = (try db.find(ip3, .{})).?;
+    const result1 = (try db.lookup(ip1, .{})).?;
+    const result2 = (try db.lookup(ip2, .{})).?;
+    const result3 = (try db.lookup(ip3, .{})).?;
 
-    _ = try cache.decode(&db, entry1, .{});
-    _ = try cache.decode(&db, entry2, .{});
-    // Cache is full now, so the next insert evicts entry1.
-    _ = try cache.decode(&db, entry3, .{});
+    _ = try cache.decode(&db, result1, .{});
+    _ = try cache.decode(&db, result2, .{});
+    // Cache is full now, so the next insert evicts result1.
+    _ = try cache.decode(&db, result3, .{});
 
-    try expect(cache.get(entry1.pointer) == null);
-    try expect(cache.get(entry2.pointer) != null);
-    try expect(cache.get(entry3.pointer) != null);
+    try expect(cache.get(result1.pointer) == null);
+    try expect(cache.get(result2.pointer) != null);
+    try expect(cache.get(result3.pointer) != null);
 }
 
 test "cache decode with field filtering" {
@@ -1480,9 +1476,9 @@ test "cache decode with field filtering" {
     defer cache.deinit();
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const entry = (try db.find(ip, .{})).?;
+    const result = (try db.lookup(ip, .{})).?;
 
-    const v = try cache.decode(&db, entry, .{ .only = &.{"city"} });
+    const v = try cache.decode(&db, result, .{ .only = &.{"city"} });
     try expectEqualStrings("Linköping", v.city.names.?.get("en").?);
     // Country was not decoded.
     try expectEqualStrings("", v.country.iso_code);
@@ -1492,7 +1488,7 @@ test "cache rejects size 0" {
     try expectError(error.InvalidCacheSize, Cache(geolite2.City).init(allocator, .{ .size = 0 }));
 }
 
-test "entryField with an empty path returns a map at the record root" {
+test "getPath with an empty path returns a map at the record root" {
     var db = try Reader.mmap(
         allocator,
         io,
@@ -1502,14 +1498,14 @@ test "entryField with an empty path returns a map at the record root" {
     defer db.close();
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const entry = (try db.find(ip, .{})).?;
+    const result = (try db.lookup(ip, .{})).?;
 
-    const root = (try db.entryField(entry, &.{})).?;
+    const root = (try db.getPath(result, &.{})).?;
     try expect(root == .map);
     try expect(root.map.len > 0);
 }
 
-test "entryField walks map-key paths to each scalar variant" {
+test "getPath walks map-key paths to each scalar variant" {
     var db = try Reader.mmap(
         allocator,
         io,
@@ -1519,26 +1515,26 @@ test "entryField walks map-key paths to each scalar variant" {
     defer db.close();
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const entry = (try db.find(ip, .{})).?;
+    const result = (try db.lookup(ip, .{})).?;
 
-    const iso = (try db.entryField(entry, &.{ "country", "iso_code" })).?;
+    const iso = (try db.getPath(result, &.{ "country", "iso_code" })).?;
     try expect(iso == .string);
     try expectEqualStrings("SE", iso.string);
 
-    const gid = (try db.entryField(entry, &.{ "country", "geoname_id" })).?;
+    const gid = (try db.getPath(result, &.{ "country", "geoname_id" })).?;
     try expect(gid == .uint32);
     try expectEqual(2661886, gid.uint32);
 
-    const in_eu = (try db.entryField(entry, &.{ "country", "is_in_european_union" })).?;
+    const in_eu = (try db.getPath(result, &.{ "country", "is_in_european_union" })).?;
     try expect(in_eu == .boolean);
     try expectEqual(true, in_eu.boolean);
 
-    const lat = (try db.entryField(entry, &.{ "location", "latitude" })).?;
+    const lat = (try db.getPath(result, &.{ "location", "latitude" })).?;
     try expect(lat == .double);
     try expectEqual(@as(f64, 58.4167), lat.double);
 }
 
-test "entryField returns null for unresolved paths" {
+test "getPath returns null for unresolved paths" {
     var db = try Reader.mmap(
         allocator,
         io,
@@ -1548,11 +1544,11 @@ test "entryField returns null for unresolved paths" {
     defer db.close();
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const entry = (try db.find(ip, .{})).?;
+    const result = (try db.lookup(ip, .{})).?;
 
-    try expectEqual(null, try db.entryField(entry, &.{"nonexistent"}));
-    try expectEqual(null, try db.entryField(entry, &.{ "country", "nonexistent" }));
-    try expectEqual(null, try db.entryField(entry, &.{ "country", "iso_code", "nope" }));
+    try expectEqual(null, try db.getPath(result, &.{"nonexistent"}));
+    try expectEqual(null, try db.getPath(result, &.{ "country", "nonexistent" }));
+    try expectEqual(null, try db.getPath(result, &.{ "country", "iso_code", "nope" }));
 }
 
 test "Array.at and Array.len" {
@@ -1565,9 +1561,9 @@ test "Array.at and Array.len" {
     defer db.close();
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const entry = (try db.find(ip, .{})).?;
+    const result = (try db.lookup(ip, .{})).?;
 
-    const subs_v = (try db.entryField(entry, &.{"subdivisions"})).?;
+    const subs_v = (try db.getPath(result, &.{"subdivisions"})).?;
     try expect(subs_v == .array);
     const subs = subs_v.array;
     try expectEqual(1, subs.len);
@@ -1593,9 +1589,9 @@ test "lazy Map.get on a nested map" {
     defer db.close();
 
     const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const entry = (try db.find(ip, .{})).?;
+    const result = (try db.lookup(ip, .{})).?;
 
-    const names_v = (try db.entryField(entry, &.{ "country", "names" })).?;
+    const names_v = (try db.getPath(result, &.{ "country", "names" })).?;
     try expect(names_v == .map);
     const names = names_v.map;
 
@@ -1606,7 +1602,7 @@ test "lazy Map.get on a nested map" {
     try expectEqual(null, try names.get("zz"));
 }
 
-test "entryField indexes into arrays" {
+test "getPath indexes into arrays" {
     var db = try Reader.mmap(
         allocator,
         io,
@@ -1616,7 +1612,7 @@ test "entryField indexes into arrays" {
     defer db.close();
 
     const ip = try std.Io.net.IpAddress.parse("1.1.1.0", 0);
-    const entry = (try db.find(ip, .{})).?;
+    const result = (try db.lookup(ip, .{})).?;
 
     const tests = [_]struct {
         path: []const []const u8,
@@ -1657,7 +1653,7 @@ test "entryField indexes into arrays" {
     };
 
     for (tests) |tc| {
-        const got = try db.entryField(entry, tc.path);
+        const got = try db.getPath(result, tc.path);
         try expectEqual(tc.want, if (got) |v| v.uint32 else null);
     }
 }

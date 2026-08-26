@@ -33,22 +33,17 @@ pub fn main(init: std.process.Init) !void {
         db.metadata.database_type,
     });
 
-    const network = if (db.metadata.ip_version == 4)
-        maxminddb.Network.all_ipv4
-    else
-        maxminddb.Network.all_ipv6;
-
     var cache = try maxminddb.Cache(maxminddb.any.Value).init(allocator, .{});
     defer cache.deinit();
 
     std.debug.print("Starting benchmark...\n", .{});
     const timer_start = std.Io.Clock.Timestamp.now(io, .awake);
 
-    var it = try db.entries(network, .{});
+    var it = try db.networks(null, .{});
 
     var n: usize = 0;
-    while (try it.next()) |entry| {
-        _ = try cache.decode(&db, entry, .{ .only = fields });
+    while (try it.next()) |result| {
+        _ = try cache.decode(&db, result, .{ .only = fields });
         n += 1;
     }
 

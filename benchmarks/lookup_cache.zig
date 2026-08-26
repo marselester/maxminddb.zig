@@ -50,16 +50,16 @@ pub fn main(init: std.process.Init) !void {
         io.random(&ip_bytes);
         const ip: std.Io.net.IpAddress = .{ .ip4 = .{ .bytes = ip_bytes, .port = 0 } };
 
-        const entry = db.find(ip, .{}) catch |err| {
+        const result = db.lookup(ip, .{}) catch |err| {
             std.debug.print("! Lookup error for IP {any}: {any}\n", .{ ip, err });
             lookup_errors += 1;
             continue;
         };
-        if (entry == null) {
+        if (result == null) {
             not_found_count += 1;
             continue;
         }
-        _ = cache.decode(&db, entry.?, .{ .only = fields }) catch |err| {
+        _ = cache.decode(&db, result.?, .{ .only = fields }) catch |err| {
             std.debug.print("! Decode error for IP {any}: {any}\n", .{ ip, err });
             lookup_errors += 1;
             continue;

@@ -26,7 +26,7 @@ fn decodeAny(
     allocator: std.mem.Allocator,
     field_names: ?[]const []const u8,
 ) !Value {
-    const field = try d.decodeFieldSizeAndType();
+    const field = try d.decodeFieldHeader();
 
     if (field.type == .Pointer) {
         const next_offset = try d.followPointer(field.size);

@@ -137,7 +137,7 @@ pub const IP = union(enum) {
     v4: [4]u8,
     v6: [16]u8,
 
-    pub fn init(addr: std.Io.net.IpAddress) IP {
+    pub fn from(addr: std.Io.net.IpAddress) IP {
         return switch (addr) {
             .ip4 => |v| .{ .v4 = v.bytes },
             .ip6 => |v| .{ .v6 = v.bytes },
@@ -280,7 +280,7 @@ test "IP.mask" {
 
     var buf: [64]u8 = undefined;
     for (tests) |tc| {
-        const ip = IP.init(try std.Io.net.IpAddress.parse(tc.addr, 0));
+        const ip = IP.from(try std.Io.net.IpAddress.parse(tc.addr, 0));
         const masked = ip.mask(tc.prefix_len).network(tc.prefix_len);
         const got = try std.fmt.bufPrint(&buf, "{f}", .{masked});
 

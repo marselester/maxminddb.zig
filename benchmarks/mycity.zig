@@ -53,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
         io.random(&ip_bytes);
         const ip: std.Io.net.IpAddress = .{ .ip4 = .{ .bytes = ip_bytes, .port = 0 } };
 
-        const result = db.lookup(
+        const result = db.query(
             MyCity,
             arena_allocator,
             ip,

@@ -33,7 +33,7 @@ pub fn decode(
         return .{};
     }
 
-    const data_field = try d.decodeFieldSizeAndType();
+    const data_field = try d.decodeFieldHeader();
     return try decodeStruct(d, allocator, T, data_field, field_names);
 }
 
@@ -41,7 +41,7 @@ fn decodeStruct(
     d: *decoder.Decoder,
     allocator: std.mem.Allocator,
     T: type,
-    data_field: decoder.DataField,
+    data_field: decoder.FieldHeader,
     field_names: ?[]const []const u8,
 ) !T {
     if (data_field.type != .Map) {
@@ -89,7 +89,7 @@ fn decodeStruct(
 }
 
 fn decodeValue(d: *decoder.Decoder, allocator: std.mem.Allocator, T: type) !T {
-    const field = try d.decodeFieldSizeAndType();
+    const field = try d.decodeFieldHeader();
 
     if (field.type == .Pointer) {
         const next_offset = try d.followPointer(field.size);

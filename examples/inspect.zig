@@ -14,7 +14,7 @@ pub fn main(init: std.process.Init) !void {
     var db = try maxminddb.Reader.mmap(allocator, io, db_path, .{});
     defer db.close();
 
-    const result = try db.lookup(
+    const result = try db.query(
         maxminddb.any.Value,
         allocator,
         try std.Io.net.IpAddress.parse(ip, 0),

@@ -10,12 +10,7 @@ pub fn main(init: std.process.Init) !void {
     var db = try maxminddb.Reader.mmap(allocator, io, db_path, .{});
     defer db.close();
 
-    const network = if (db.metadata.ip_version == 4)
-        maxminddb.Network.all_ipv4
-    else
-        maxminddb.Network.all_ipv6;
-
-    var it = try db.scan(maxminddb.geolite2.City, allocator, network, .{});
+    var it = try db.scan(maxminddb.geolite2.City, allocator, null, .{});
 
     var n: usize = 0;
     while (try it.next()) |item| {

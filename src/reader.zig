@@ -85,7 +85,7 @@ else
 pub const Reader = struct {
     metadata: Metadata,
     src: []const u8,
-    offset: usize,
+    data_start: usize,
     ipv4_start: usize,
     // ipv4_index is a flat array of tree node IDs and data offsets
     // for fast lookup of IPv4 addresses by their first N bits.
@@ -99,7 +99,7 @@ pub const Reader = struct {
     // without re-traversing the tree for terminal nodes in the index.
     ipv4_index_prefix_len: ?[]u8,
     memory_map: ?struct {
-        mm: std.Io.File.MemoryMap,
+        map: std.Io.File.MemoryMap,
         io: std.Io,
     },
     arena: *std.heap.ArenaAllocator,
@@ -121,20 +121,20 @@ pub const Reader = struct {
         ipv4_index_first_n_bits: u8 = 0,
     };
 
-    /// Options for find() and entries().
-    pub const EntryOptions = struct {
+    /// Options for lookup() and networks().
+    pub const ResultOptions = struct {
         /// Include records that are empty maps. Skipped by default.
         include_empty_values: bool = false,
     };
 
-    /// Options for decoding records from the data section.
+    /// Options for decode() and decodeUnmanaged().
     pub const DecodeOptions = struct {
         /// Decode only the specified top-level fields, e.g., &.{"city", "country"}.
         /// Null means decode all fields.
         only: ?[]const []const u8 = null,
     };
 
-    /// Options for lookup() and scan().
+    /// Options for query() and scan().
     pub const QueryOptions = struct {
         /// Decode only the specified top-level fields, e.g., &.{"city", "country"}.
         /// Null means decode all fields.
@@ -143,19 +143,26 @@ pub const Reader = struct {
         include_empty_values: bool = false,
     };
 
-    /// A located entry in the database, returned by find() and EntryIterator.next().
+    /// Raw pointer into the data section as stored in the search tree.
+    /// Two results with the same pointer reference the same data record.
+    /// Use as a cache key to avoid redundant decoding.
+    pub const DataPointer = enum(usize) {
+        /// No record. A record value of 0 denotes node 0, so the search tree
+        /// never stores it as a data pointer.
+        none = 0,
+        _,
+    };
+
+    /// A located result in the database, returned by lookup() and NetworkIterator.next().
     /// Contains a pointer into the data section and the network that matched.
     /// Pass it to decode() or Cache.decode() to get the record value.
-    pub const Entry = struct {
-        /// Raw pointer into the data section as stored in the search tree.
-        /// Two entries with the same pointer reference the same data record.
-        /// Use as a cache key to avoid redundant decoding.
-        pointer: usize,
+    pub const Result = struct {
+        pointer: DataPointer,
         network: net.Network,
     };
 
-    /// Result wraps a decoded value with an arena that owns all its allocations.
-    pub fn Result(comptime T: type) type {
+    /// Decoded wraps a value with an arena that owns all its allocations.
+    pub fn Decoded(comptime T: type) type {
         return struct {
             network: net.Network,
             value: T,
@@ -209,7 +216,7 @@ pub const Reader = struct {
         var r = Reader{
             .metadata = metadata,
             .src = src,
-            .offset = data_offset,
+            .data_start = data_offset,
             .ipv4_start = 0,
             .ipv4_index_first_n_bits = options.ipv4_index_first_n_bits,
             .ipv4_index = null,
@@ -282,14 +289,14 @@ pub const Reader = struct {
             return error.FileEmpty;
         }
 
-        var mm = try f.createMemoryMap(
+        var map = try f.createMemoryMap(
             io,
             .{
                 .len = file_size,
                 .protection = .{ .read = true },
             },
         );
-        errdefer mm.destroy(io);
+        errdefer map.destroy(io);
 
         const arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer {
@@ -298,8 +305,8 @@ pub const Reader = struct {
         }
         arena.* = std.heap.ArenaAllocator.init(allocator);
 
-        var r = try init(arena, mm.memory, options);
-        r.memory_map = .{ .mm = mm, .io = io };
+        var r = try init(arena, map.memory, options);
+        r.memory_map = .{ .map = map, .io = io };
 
         return r;
     }
@@ -312,41 +319,41 @@ pub const Reader = struct {
         self.arena.deinit();
         allocator.destroy(self.arena);
 
-        if (self.memory_map) |*mm| {
-            mm.mm.destroy(mm.io);
+        if (self.memory_map) |*mapped| {
+            mapped.map.destroy(mapped.io);
         }
     }
 
-    /// Looks up a value by an IP address.
+    /// Looks up an IP address and decodes the record into T.
     /// Returns null when the IP address is not found or the record is empty.
     ///
-    /// The returned Result owns an arena, so you should call deinit() to free it.
-    pub fn lookup(
+    /// The returned result owns an arena, so you should call deinit() to free it.
+    pub fn query(
         self: *const Reader,
         T: type,
         allocator: std.mem.Allocator,
         address: std.Io.net.IpAddress,
         options: QueryOptions,
-    ) !?Result(T) {
-        const entry = try self.find(
+    ) !?Decoded(T) {
+        const result = try self.lookup(
             address,
             .{ .include_empty_values = options.include_empty_values },
         ) orelse return null;
 
-        return try self.decode(T, allocator, entry, .{ .only = options.only });
+        return try self.decode(T, allocator, result, .{ .only = options.only });
     }
 
-    /// Finds an entry by an IP address (no decoding).
+    /// Looks up the record for an IP address (no decoding).
     /// Returns null if the IP address is not found or the record is empty.
     /// Empty records are skipped by default.
     /// Use include_empty_values = true to return them.
-    pub fn find(self: *const Reader, address: std.Io.net.IpAddress, options: EntryOptions) !?Entry {
-        const ip = net.IP.init(address);
+    pub fn lookup(self: *const Reader, address: std.Io.net.IpAddress, options: ResultOptions) !?Result {
+        const ip = net.IP.from(address);
         if (ip.bitCount() == 128 and self.metadata.ip_version == 4) {
             return ReadError.IPv6AddressInIPv4Database;
         }
 
-        var pointer: usize = 0;
+        var pointer: DataPointer = .none;
         var prefix_len: usize = 0;
         if (self.ipv4_index != null and ip == .v4) {
             pointer, prefix_len = try self.findAddressInTreeWithIndex(ip);
@@ -355,7 +362,7 @@ pub const Reader = struct {
             pointer, prefix_len = try self.findAddressInTree(ip, start_node, 0);
         }
 
-        if (pointer == 0) {
+        if (pointer == .none) {
             return null;
         }
 
@@ -369,29 +376,29 @@ pub const Reader = struct {
         };
     }
 
-    /// Decodes an entry from the data section.
-    /// The returned Result owns an arena, so you should call deinit() to free it.
+    /// Decodes a record from the data section.
+    /// The returned result owns an arena, so you should call deinit() to free it.
     pub fn decode(
         self: *const Reader,
         T: type,
         allocator: std.mem.Allocator,
-        entry: Entry,
+        result: Result,
         options: DecodeOptions,
-    ) !Result(T) {
+    ) !Decoded(T) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
 
-        const value = try self.decodeUnmanaged(T, arena.allocator(), entry, options);
+        const value = try self.decodeUnmanaged(T, arena.allocator(), result, options);
 
         return .{
-            .network = entry.network,
+            .network = result.network,
             .value = value,
             .arena = arena,
         };
     }
 
-    /// Decodes an entry and returns the bare value.
-    /// Use this when you manage the arena yourself, e.g., Cache, ResultIterator.
+    /// Decodes a record and returns the bare value.
+    /// Use this when you manage the arena yourself, e.g., Cache, DecodedIterator.
     /// For one-shot lookups, prefer decode() which bundles an arena with the result.
     ///
     /// Use ArenaAllocator or similar because individual allocations aren't tracked
@@ -400,30 +407,31 @@ pub const Reader = struct {
         self: *const Reader,
         T: type,
         allocator: std.mem.Allocator,
-        entry: Entry,
+        result: Result,
         options: DecodeOptions,
     ) !T {
         return try self.resolveDataPointerAndDecode(
             allocator,
             T,
-            entry.pointer,
+            result.pointer,
             options.only,
         );
     }
 
-    /// Scans networks within the given IP range.
+    /// Scans networks within the given IP range, decoding each record into T.
+    /// A null range covers every network in the database.
     ///
-    /// Each returned Result owns an arena, so you should call deinit() to free it.
+    /// Each returned result owns an arena, so you should call deinit() to free it.
     pub fn scan(
         self: *const Reader,
         T: type,
         allocator: std.mem.Allocator,
-        network: net.Network,
+        range: ?net.Network,
         options: QueryOptions,
-    ) !ResultIterator(T) {
+    ) !DecodedIterator(T) {
         return .{
-            .it = try self.entries(
-                network,
+            .it = try self.networks(
+                range,
                 .{ .include_empty_values = options.include_empty_values },
             ),
             .field_names = options.only,
@@ -431,15 +439,17 @@ pub const Reader = struct {
         };
     }
 
-    /// Iterates over entries (pointer + network) within the given IP range without decoding.
+    /// Iterates over results (pointer + network) within the given IP range without decoding.
+    /// A null range covers every network in the database.
     /// Use with decode() or Cache.decode() to control when decoding happens.
     ///
     /// Empty records are skipped by default.
     /// Use include_empty_values = true to yield them.
-    pub fn entries(self: *const Reader, network: net.Network, options: EntryOptions) !EntryIterator {
+    pub fn networks(self: *const Reader, range: ?net.Network, options: ResultOptions) !NetworkIterator {
+        const network = range orelse self.fullRange();
         const prefix_len: usize = network.prefix_len;
-        const ip_raw = net.IP.init(network.ip);
-        const bit_count: usize = ip_raw.bitCount();
+        const ip = net.IP.from(network.ip);
+        const bit_count: usize = ip.bitCount();
 
         if (prefix_len > bit_count) {
             return ReadError.InvalidPrefixLen;
@@ -453,7 +463,7 @@ pub const Reader = struct {
 
         // Traverse down the tree to the level that matches the CIDR prefix.
         // Track depth as number of tree edges traversed (becomes the network prefix length).
-        const ip_bytes = ip_raw.mask(prefix_len);
+        const ip_bytes = ip.mask(prefix_len);
         var depth: usize = 0;
         if (node < node_count) {
             while (depth < prefix_len) {
@@ -465,7 +475,7 @@ pub const Reader = struct {
             }
         }
 
-        var it = EntryIterator{
+        var it = NetworkIterator{
             .reader = self,
             .node_count = node_count,
             .include_empty_values = options.include_empty_values,
@@ -485,16 +495,21 @@ pub const Reader = struct {
         return it;
     }
 
-    /// Walks a flat map-key path from an entry's root with zero allocations.
+    /// Walks a flat map-key path from a result's root with zero allocations.
     /// Returns the value at the terminal, or null if any step does not resolve, e.g., missing key.
-    /// An empty path resolves to the record root, which is non-null for a valid entry.
-    pub fn entryField(
+    /// An empty path resolves to the record root, which is non-null for a valid result.
+    pub fn getPath(
         self: *const Reader,
-        entry: Entry,
+        result: Result,
         path: []const []const u8,
     ) !?lazy.Value {
-        const record_offset = try self.resolveDataPointer(entry.pointer);
-        return try lazy.walkPath(self.src[self.offset..], record_offset, path);
+        const record_offset = try self.resolveDataPointer(result.pointer);
+        return try lazy.walkPath(self.src[self.data_start..], record_offset, path);
+    }
+
+    /// The range covering every network in the database.
+    fn fullRange(self: *const Reader) net.Network {
+        return if (self.metadata.ip_version == 4) net.Network.all_ipv4 else net.Network.all_ipv6;
     }
 
     fn buildIPv4Index(self: *Reader) !void {
@@ -561,13 +576,13 @@ pub const Reader = struct {
         self: *const Reader,
         allocator: std.mem.Allocator,
         T: type,
-        pointer: usize,
+        pointer: DataPointer,
         field_names: ?[]const []const u8,
     ) !T {
         const record_offset = try self.resolveDataPointer(pointer);
 
         var d = decoder.Decoder{
-            .src = self.src[self.offset..],
+            .src = self.src[self.data_start..],
             .offset = record_offset,
         };
 
@@ -578,14 +593,15 @@ pub const Reader = struct {
         return try typed.decode(&d, allocator, T, field_names);
     }
 
-    fn resolveDataPointer(self: *const Reader, pointer: usize) !usize {
+    fn resolveDataPointer(self: *const Reader, pointer: DataPointer) !usize {
+        const raw = @intFromEnum(pointer);
         const min_pointer = self.metadata.node_count + data_section_separator_size;
-        if (pointer < min_pointer) {
+        if (raw < min_pointer) {
             return ReadError.CorruptedTree;
         }
 
-        const resolved: usize = pointer - min_pointer;
-        if (self.offset > self.src.len or resolved >= self.src.len - self.offset) {
+        const resolved: usize = raw - min_pointer;
+        if (self.data_start > self.src.len or resolved >= self.src.len - self.data_start) {
             return ReadError.CorruptedTree;
         }
 
@@ -593,10 +609,10 @@ pub const Reader = struct {
     }
 
     // Checks if the record at the given data pointer is an empty map (zero entries).
-    fn isEmptyRecord(self: *const Reader, pointer: usize) !bool {
+    fn isEmptyRecord(self: *const Reader, pointer: DataPointer) !bool {
         const record_offset = try self.resolveDataPointer(pointer);
         var d = decoder.Decoder{
-            .src = self.src[self.offset..],
+            .src = self.src[self.data_start..],
             .offset = record_offset,
         };
 
@@ -606,7 +622,7 @@ pub const Reader = struct {
     // Uses the IPv4 index for fast lookups.
     // The index covers the first N bits of the IPv4 address, allowing us to
     // skip directly to the node at depth N instead of traversing bit by bit.
-    fn findAddressInTreeWithIndex(self: *const Reader, ip: net.IP) !struct { usize, usize } {
+    fn findAddressInTreeWithIndex(self: *const Reader, ip: net.IP) !struct { DataPointer, usize } {
         const ip_int = std.mem.readInt(u32, &ip.v4, .big);
         const index_pos = std.math.shr(usize, ip_int, 32 - self.ipv4_index_first_n_bits);
 
@@ -617,9 +633,9 @@ pub const Reader = struct {
         if (node >= self.metadata.node_count) {
             const prefix_len: usize = self.ipv4_index_prefix_len.?[index_pos];
             if (node == self.metadata.node_count) {
-                return .{ 0, prefix_len };
+                return .{ .none, prefix_len };
             }
-            return .{ node, prefix_len };
+            return .{ @enumFromInt(node), prefix_len };
         }
 
         // Continue traversal from where the index ends (bit N of IPv4 portion).
@@ -631,7 +647,7 @@ pub const Reader = struct {
         ip: net.IP,
         start_node: usize,
         start_bit: usize,
-    ) !struct { usize, usize } {
+    ) !struct { DataPointer, usize } {
         const stop_bit = ip.bitCount();
         const node_count: usize = self.metadata.node_count;
 
@@ -647,11 +663,11 @@ pub const Reader = struct {
         }
 
         if (node == node_count) {
-            return .{ 0, prefix_len };
+            return .{ .none, prefix_len };
         }
 
         if (node > node_count) {
-            return .{ node, prefix_len };
+            return .{ @enumFromInt(node), prefix_len };
         }
 
         return ReadError.InvalidTreeNode;
@@ -710,16 +726,16 @@ pub const Reader = struct {
 
 /// Ring buffer cache of recently decoded records.
 /// The cache owns the memory that backs decoded values,
-/// so each value is valid until its cache entry is evicted.
+/// so each value is valid until its slot is evicted.
 ///
 /// The default size of 16 is good for most databases.
 /// Country databases benefit from larger sizes, e.g., 64 or larger.
 pub fn Cache(comptime T: type) type {
     return struct {
-        entries: []Entry,
-        // Indicates number of entries in the cache.
-        len: usize = 0,
-        // It's an index in the entries array where a new item will be written at.
+        slots: []Slot,
+        // Number of slots in use.
+        filled: usize = 0,
+        // Index in the slots array where the next record will be written.
         write_pos: usize = 0,
         allocator: std.mem.Allocator,
 
@@ -729,8 +745,8 @@ pub fn Cache(comptime T: type) type {
             size: usize = 16,
         };
 
-        const Entry = struct {
-            pointer: usize,
+        const Slot = struct {
+            pointer: Reader.DataPointer,
             value: T,
             arena: std.heap.ArenaAllocator,
         };
@@ -741,60 +757,60 @@ pub fn Cache(comptime T: type) type {
             }
 
             return .{
-                .entries = try allocator.alloc(Entry, options.size),
+                .slots = try allocator.alloc(Slot, options.size),
                 .allocator = allocator,
             };
         }
 
         pub fn deinit(self: *Self) void {
             self.reset();
-            self.allocator.free(self.entries);
+            self.allocator.free(self.slots);
         }
 
-        /// Drops every cached entry, freeing arenas, and leaves the cache
-        /// ready to receive new entries at the same capacity.
+        /// Drops every cached record, freeing arenas, and leaves the cache
+        /// ready to refill at the same capacity.
         /// Use when the decode filter changes and cached trees are stale.
         pub fn reset(self: *Self) void {
-            for (self.entries[0..self.len]) |*e| {
-                e.arena.deinit();
+            for (self.slots[0..self.filled]) |*slot| {
+                slot.arena.deinit();
             }
 
-            self.len = 0;
+            self.filled = 0;
             self.write_pos = 0;
         }
 
         /// Returns a cached value for the given data pointer, or null on cache miss.
-        pub fn get(self: *Self, pointer: usize) ?T {
-            for (self.entries[0..self.len]) |*e| {
-                if (e.pointer == pointer) {
-                    return e.value;
+        pub fn get(self: *Self, pointer: Reader.DataPointer) ?T {
+            for (self.slots[0..self.filled]) |*slot| {
+                if (slot.pointer == pointer) {
+                    return slot.value;
                 }
             }
 
             return null;
         }
 
-        /// Decodes an entry, using the cache to avoid redundant decoding.
+        /// Decodes a record, using the cache to avoid redundant decoding.
         /// Returns the cached value on hit, or decodes and caches on miss.
         /// The cache owns the decoded memory.
-        /// The returned value is valid until the cache entry is evicted or cache.deinit() is called.
+        /// The returned value is valid until its slot is evicted or cache.deinit() is called.
         pub fn decode(
             self: *Self,
             db: *const Reader,
-            entry: Reader.Entry,
+            result: Reader.Result,
             options: Reader.DecodeOptions,
         ) !T {
-            if (self.get(entry.pointer)) |v| {
+            if (self.get(result.pointer)) |v| {
                 return v;
             }
 
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             errdefer arena.deinit();
 
-            const value = try db.decodeUnmanaged(T, arena.allocator(), entry, options);
+            const value = try db.decodeUnmanaged(T, arena.allocator(), result, options);
 
             self.insert(.{
-                .pointer = entry.pointer,
+                .pointer = result.pointer,
                 .value = value,
                 .arena = arena,
             });
@@ -802,33 +818,33 @@ pub fn Cache(comptime T: type) type {
             return value;
         }
 
-        fn insert(self: *Self, e: Entry) void {
-            if (self.len < self.entries.len) {
-                self.entries[self.len] = e;
-                self.len += 1;
+        fn insert(self: *Self, slot: Slot) void {
+            if (self.filled < self.slots.len) {
+                self.slots[self.filled] = slot;
+                self.filled += 1;
 
                 return;
             }
 
-            // Evict the oldest entry and insert the new one.
-            self.entries[self.write_pos].arena.deinit();
-            self.entries[self.write_pos] = e;
-            self.write_pos = (self.write_pos + 1) % self.entries.len;
+            // Evict the oldest record and take its slot.
+            self.slots[self.write_pos].arena.deinit();
+            self.slots[self.write_pos] = slot;
+            self.write_pos = (self.write_pos + 1) % self.slots.len;
         }
     };
 }
 
-pub fn ResultIterator(T: type) type {
+pub fn DecodedIterator(T: type) type {
     return struct {
-        it: EntryIterator,
+        it: NetworkIterator,
         field_names: ?[]const []const u8,
         allocator: std.mem.Allocator,
 
         /// Returns the next network and its value.
         ///
-        /// The returned Result owns an arena, so you should call deinit() to free it.
-        pub fn next(self: *@This()) !?Reader.Result(T) {
-            const entry = try self.it.next() orelse return null;
+        /// The returned result owns an arena, so you should call deinit() to free it.
+        pub fn next(self: *@This()) !?Reader.Decoded(T) {
+            const result = try self.it.next() orelse return null;
 
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             errdefer arena.deinit();
@@ -836,12 +852,12 @@ pub fn ResultIterator(T: type) type {
             const value = try self.it.reader.decodeUnmanaged(
                 T,
                 arena.allocator(),
-                entry,
+                result,
                 .{ .only = self.field_names },
             );
 
             return .{
-                .network = entry.network,
+                .network = result.network,
                 .value = value,
                 .arena = arena,
             };
@@ -849,10 +865,10 @@ pub fn ResultIterator(T: type) type {
     };
 }
 
-/// Iterates over entries (pointer + network) without decoding records.
-/// Empty records are skipped by default, see EntryOptions.
-/// Use Reader.decode() or Cache.decode() to decode individual entries.
-pub const EntryIterator = struct {
+/// Iterates over results (pointer + network) without decoding records.
+/// Empty records are skipped unless include_empty_values is set.
+/// Use Reader.decode() or Cache.decode() to decode individual results.
+pub const NetworkIterator = struct {
     reader: *const Reader,
     node_count: usize,
     stack: [max_stack_size]ScanNode = undefined,
@@ -870,8 +886,8 @@ pub const EntryIterator = struct {
         node: usize,
     };
 
-    /// Returns the next entry (pointer + network) or null when exhausted.
-    pub fn next(self: *Self) !?Reader.Entry {
+    /// Returns the next result (pointer + network) or null when exhausted.
+    pub fn next(self: *Self) !?Reader.Result {
         while (self.pop()) |current| {
             const reader = self.reader;
             const bit_count = current.ip_bytes.bitCount();
@@ -887,12 +903,13 @@ pub const EntryIterator = struct {
 
             // Data pointer (> node_count) means this node holds a record.
             if (current.node > self.node_count) {
-                if (!self.include_empty_values and try reader.isEmptyRecord(current.node)) {
+                const pointer: Reader.DataPointer = @enumFromInt(current.node);
+                if (!self.include_empty_values and try reader.isEmptyRecord(pointer)) {
                     continue;
                 }
 
                 return .{
-                    .pointer = current.node,
+                    .pointer = pointer,
                     .network = current.ip_bytes.network(current.prefix_len),
                 };
             } else if (current.node < self.node_count) {
