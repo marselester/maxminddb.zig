@@ -10,6 +10,8 @@ pub const DecodeError = error{
     InvalidFloatSize,
     TooDeep,
     TooManyPointers,
+    TooManyValues,
+    PayloadTooLarge,
     InvalidPointer,
     InvalidDataOffset,
 };
@@ -17,8 +19,14 @@ pub const DecodeError = error{
 // Maximum nesting depth for decoded data structures.
 pub const max_data_structure_depth: usize = 512;
 
-// Maximum pointers followed while decoding one record.
-// Bounds pointer amplification and cycles to prevent a runaway decode.
+// Maximum values materialized for one decode, recommended by the MaxMind DB spec.
+pub const max_decoded_values: usize = 1 << 16;
+
+// Maximum string and bytes payload materialized for one decode.
+pub const max_payload_bytes: usize = 1 << 21;
+
+// Maximum pointers followed for one decode.
+// Bounds paths that traverse without allocating, which the value budget never sees.
 pub const max_pointer_follows: usize = 1 << 20;
 
 // These are database field types as defined in the spec.
@@ -57,14 +65,54 @@ pub const FieldHeader = struct {
 const ControlByte = packed struct(u8) {
     size: u5,
     type: u3,
+
+    // How many of those extension bytes follow, see https://maxmind.github.io/MaxMind-DB/#payload-size.
+    // A pointer encodes its size in the raw 5 bits, so it never has any.
+    // The real type is a parameter because an extended one lives in the next byte.
+    fn sizeExtensionBytes(self: ControlByte, field_type: FieldType) usize {
+        if (field_type == .Pointer or self.size <= 28) {
+            return 0;
+        }
+
+        return @as(usize, self.size) - 28;
+    }
 };
 
 pub const Decoder = struct {
     src: []const u8,
     offset: usize,
     depth: usize = 0,
-    // Remaining pointers this decode may follow, decremented per follow.
-    budget: usize = max_pointer_follows,
+    pointer_follows: usize = 0,
+    payload_bytes: usize = 0,
+    // Starts at one: the root value is an occurrence too, so a container holding
+    // exactly the limit's worth of entries is one over.
+    decoded_values: usize = 1,
+    strict: bool = true,
+
+    // Bounds an array's declared item count.
+    // An item needs at least one byte.
+    pub fn boundArray(self: *Decoder, items: usize) DecodeError!void {
+        try self.requireBytes(items);
+        return self.chargeEntries(items);
+    }
+
+    // Bounds a map's declared pair count.
+    // A pair needs at least two bytes, and charges one.
+    // The spec counts its key and value separately, which is one of the accountings it permits.
+    pub fn boundMap(self: *Decoder, pairs: usize) DecodeError!void {
+        try self.requireBytes(pairs * 2);
+        return self.chargeEntries(pairs);
+    }
+
+    // Adds to this decode's running total and fails past the limit.
+    // A shared pointer target is charged every time it expands,
+    // which is what stops a small record from describing a huge structure.
+    fn chargeEntries(self: *Decoder, entries: usize) DecodeError!void {
+        self.decoded_values += entries;
+        if (self.decoded_values > max_decoded_values) {
+            return DecodeError.TooManyValues;
+        }
+    }
 
     // Ensures at least n bytes remain from the current offset.
     pub inline fn requireBytes(self: *const Decoder, n: usize) DecodeError!void {
@@ -90,15 +138,13 @@ pub const Decoder = struct {
     // Resolves a pointer to its target offset.
     // Rejects a target that lands past the data section or that begins with another pointer:
     // both indicate a corrupt DB.
-    // field_size is the raw 5 control-byte bits, as in decodePointer.
     pub fn followPointer(self: *Decoder, field_size: usize) DecodeError!usize {
-        // Charge the traversal budget per pointer followed.
-        if (self.budget == 0) {
+        self.pointer_follows += 1;
+        if (self.pointer_follows > max_pointer_follows) {
             return DecodeError.TooManyPointers;
         }
-        self.budget -= 1;
 
-        const next = self.decodePointer(field_size);
+        const next = try self.decodePointer(field_size);
         if (next >= self.src.len) {
             return DecodeError.InvalidPointer;
         }
@@ -150,7 +196,7 @@ pub const Decoder = struct {
 
         switch (field.type) {
             // Consume the pointer bytes, don't follow to its payload.
-            .Pointer => _ = self.decodePointer(field.size),
+            .Pointer => _ = try self.decodePointer(field.size),
             // Bool has no payload, size is encoded in the control byte.
             .Bool => {},
             // Skip each array element.
@@ -186,9 +232,13 @@ pub const Decoder = struct {
     // Pointers in the metadata start from the beginning of the metadata section.
     // field_size is the raw 5 control-byte bits, NOT a payload byte count as in
     // the value decoders: bits 3-4 give the pointer size, bits 0-2 its high bits.
-    pub fn decodePointer(self: *Decoder, field_size: usize) usize {
+    pub fn decodePointer(self: *Decoder, field_size: usize) DecodeError!usize {
         const pointer_value_offset = [_]usize{ 0, 0, 2048, 526_336, 0 };
         const pointer_size = ((field_size >> 3) & 0x3) + 1;
+        if (self.strict) {
+            try self.requireBytes(pointer_size);
+        }
+
         const offset = self.offset;
         const new_offset = offset + pointer_size;
         const pointer_bytes = self.src[offset..new_offset];
@@ -205,6 +255,12 @@ pub const Decoder = struct {
     pub fn decodeBytes(self: *Decoder, field_size: usize) DecodeError![]const u8 {
         // Must not over-read adjacent memory into the returned slice.
         try self.requireBytes(field_size);
+
+        // Charged per occurrence, so re-expanding a shared target charges again.
+        self.payload_bytes += field_size;
+        if (self.payload_bytes > max_payload_bytes) {
+            return DecodeError.PayloadTooLarge;
+        }
 
         const offset = self.offset;
         const new_offset = offset + field_size;
@@ -297,13 +353,15 @@ pub const Decoder = struct {
     // Reads a field header, following any pointer chain to the target's payload,
     // and returns the resolved (non-pointer) field.
     pub inline fn resolveField(self: *Decoder) DecodeError!FieldHeader {
-        var field = try self.decodeFieldHeader();
-        while (field.type == .Pointer) {
-            self.offset = try self.followPointer(field.size);
-            field = try self.decodeFieldHeader();
+        const field = try self.decodeFieldHeader();
+        if (field.type != .Pointer) {
+            return field;
         }
 
-        return field;
+        // The spec forbids a target to be itself a pointer.
+        self.offset = try self.followPointer(field.size);
+
+        return try self.decodeFieldHeader();
     }
 
     // Checks whether the value at the current offset is an empty map, following any pointers.
@@ -314,6 +372,10 @@ pub const Decoder = struct {
 
     // Decodes a control byte into a field type and payload size.
     pub fn decodeFieldHeader(self: *Decoder) !FieldHeader {
+        if (self.strict) {
+            try self.requireBytes(1);
+        }
+
         const control: ControlByte = @bitCast(self.src[self.offset]);
         self.offset += 1;
 
@@ -329,6 +391,10 @@ pub const Decoder = struct {
         // Extended type or size-extension bytes.
         var field_type: FieldType = @enumFromInt(control.type);
         if (field_type == FieldType.Extended) {
+            if (self.strict) {
+                try self.requireBytes(1);
+            }
+
             // Extended types are 7 (Map) through 15 (Float), so valid extended byte values are 0-8.
             const ext_byte = self.src[self.offset];
             if (ext_byte > 8) {
@@ -339,24 +405,26 @@ pub const Decoder = struct {
             self.offset += 1;
         }
 
+        const extension_bytes = control.sizeExtensionBytes(field_type);
+        if (self.strict and extension_bytes > 0) {
+            try self.requireBytes(extension_bytes);
+        }
+
         return .{
-            .size = self.decodeFieldSize(control, field_type),
+            .size = self.decodeFieldSize(control, extension_bytes),
             .type = field_type,
         };
     }
 
     // Decodes the field size in bytes, see https://maxmind.github.io/MaxMind-DB/#payload-size.
-    fn decodeFieldSize(self: *Decoder, control: ControlByte, field_type: FieldType) usize {
-        // Pointer types use the raw 5-bit size without extension.
+    fn decodeFieldSize(self: *Decoder, control: ControlByte, extension_bytes: usize) usize {
         const field_size: usize = control.size;
-        if (field_type == FieldType.Pointer) {
+        if (extension_bytes == 0) {
             return field_size;
         }
 
-        const bytes_to_read = if (field_size > 28) field_size - 28 else 0;
-
         const offset = self.offset;
-        const new_offset = offset + bytes_to_read;
+        const new_offset = offset + extension_bytes;
         const size_bytes = self.src[offset..new_offset];
         self.offset = new_offset;
 
@@ -400,7 +468,10 @@ test "decodeFieldSize returns raw size for pointer type" {
         .type = 0b001,
         .size = 0b11_101,
     };
-    const size = d.decodeFieldSize(control, .Pointer);
+    // A pointer never has size-extension bytes, even at 29.
+    try std.testing.expectEqual(0, control.sizeExtensionBytes(.Pointer));
+
+    const size = d.decodeFieldSize(control, control.sizeExtensionBytes(.Pointer));
     try std.testing.expectEqual(29, size);
     // Offset must not advance, i.e., no extra bytes read for size extension.
     try std.testing.expectEqual(0, d.offset);
@@ -419,15 +490,15 @@ test "isEmptyMap rejects a pointer to a pointer" {
     try std.testing.expectError(error.InvalidPointer, d.isEmptyMap());
 }
 
-test "followPointer enforces the traversal budget" {
-    // Each followed pointer costs one budget unit.
+test "followPointer enforces the follow limit" {
+    // Each followed pointer counts once.
     var d = Decoder{
         .src = &.{
             0x01, // 1-byte pointer to offset 1
             0x00, // non-pointer
         },
         .offset = 0,
-        .budget = 1, // permits one follow, the next trips.
+        .pointer_follows = max_pointer_follows - 1, // one follow left.
     };
 
     _ = try d.followPointer(0);

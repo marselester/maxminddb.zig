@@ -98,6 +98,7 @@ pub const Reader = struct {
     // This lets us return the correct prefix length
     // without re-traversing the tree for terminal nodes in the index.
     ipv4_index_prefix_len: ?[]u8,
+    strict: bool = true,
     memory_map: ?struct {
         map: std.Io.File.MemoryMap,
         io: std.Io,
@@ -119,6 +120,11 @@ pub const Reader = struct {
         /// The recommended value is 16 (~320KB, fits L2 cache), or 12 (~20KB) for constrained devices.
         /// The valid range is between 0 and 24 where 0 disables the index.
         ipv4_index_first_n_bits: u8 = 0,
+        /// Bounds-check the offsets that decoding follows.
+        /// Turning it off is faster, but a maliciously crafted database can then crash the process.
+        /// Reads that return data are bounds-checked either way,
+        /// so no payload byte comes from outside the database.
+        strict: bool = true,
     };
 
     /// Options for lookup() and networks().
@@ -217,6 +223,7 @@ pub const Reader = struct {
             .metadata = metadata,
             .src = src,
             .data_start = data_offset,
+            .strict = options.strict,
             .ipv4_start = 0,
             .ipv4_index_first_n_bits = options.ipv4_index_first_n_bits,
             .ipv4_index = null,
@@ -504,7 +511,9 @@ pub const Reader = struct {
         path: []const []const u8,
     ) !?lazy.Value {
         const record_offset = try self.resolveDataPointer(result.pointer);
-        return try lazy.walkPath(self.src[self.data_start..], record_offset, path);
+        var d = self.recordDecoder(record_offset);
+
+        return try lazy.walkPath(&d, path);
     }
 
     /// The range covering every network in the database.
@@ -581,10 +590,7 @@ pub const Reader = struct {
     ) !T {
         const record_offset = try self.resolveDataPointer(pointer);
 
-        var d = decoder.Decoder{
-            .src = self.src[self.data_start..],
-            .offset = record_offset,
-        };
+        var d = self.recordDecoder(record_offset);
 
         if (comptime T == any.Value) {
             return try any.decode(&d, allocator, field_names);
@@ -608,13 +614,19 @@ pub const Reader = struct {
         return resolved;
     }
 
+    // Builds a decoder positioned at a record in the data section.
+    fn recordDecoder(self: *const Reader, record_offset: usize) decoder.Decoder {
+        return .{
+            .src = self.src[self.data_start..],
+            .offset = record_offset,
+            .strict = self.strict,
+        };
+    }
+
     // Checks if the record at the given data pointer is an empty map (zero entries).
     fn isEmptyRecord(self: *const Reader, pointer: DataPointer) !bool {
         const record_offset = try self.resolveDataPointer(pointer);
-        var d = decoder.Decoder{
-            .src = self.src[self.data_start..],
-            .offset = record_offset,
-        };
+        var d = self.recordDecoder(record_offset);
 
         return d.isEmptyMap();
     }

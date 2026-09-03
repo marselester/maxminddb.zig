@@ -121,6 +121,22 @@ fn expectEqualMaps(
     }
 }
 
+fn decodeAll(path: []const u8) !usize {
+    var db = try Reader.mmap(allocator, io, path, .{});
+    defer db.close();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var count: usize = 0;
+    var it = try db.networks(null, .{});
+    while (try it.next()) |result| : (count += 1) {
+        _ = try db.decodeUnmanaged(any.Value, arena.allocator(), result, .{});
+    }
+
+    return count;
+}
+
 const allocator = std.testing.allocator;
 const io = std.testing.io;
 const expect = std.testing.expect;
@@ -192,6 +208,229 @@ test "reject a database with an oversized container" {
 
         var it = try db.scan(any.Value, allocator, net.Network.all_ipv4, .{});
         try expectError(error.InvalidDataOffset, it.next());
+    }
+}
+
+test "strict off decodes a valid database identically" {
+    var strictOn = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/GeoIP2-City-Test.mmdb",
+        .{ .strict = true },
+    );
+    defer strictOn.close();
+    var strictOff = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/GeoIP2-City-Test.mmdb",
+        .{ .strict = false },
+    );
+    defer strictOff.close();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var iterStrictOn = try strictOn.networks(null, .{});
+    var iterStrictOff = try strictOff.networks(null, .{});
+    var n: usize = 0;
+    while (try iterStrictOn.next()) |resStrictOn| {
+        const resStrictOff = (try iterStrictOff.next()).?;
+        try expectEqual(resStrictOn.pointer, resStrictOff.pointer);
+
+        const valStrictOn = try strictOn.decodeUnmanaged(
+            any.Value,
+            arena.allocator(),
+            resStrictOn,
+            .{},
+        );
+        const valStrictOff = try strictOff.decodeUnmanaged(
+            any.Value,
+            arena.allocator(),
+            resStrictOff,
+            .{},
+        );
+
+        try std.testing.expectEqualStrings(
+            try std.fmt.allocPrint(arena.allocator(), "{f}", .{valStrictOn}),
+            try std.fmt.allocPrint(arena.allocator(), "{f}", .{valStrictOff}),
+        );
+
+        n += 1;
+    }
+
+    try expectEqual(null, try iterStrictOff.next());
+    try expect(n > 0);
+}
+
+test "decoder resource limit" {
+    const tests = [_]struct {
+        path: []const u8,
+        want: ?anyerror,
+    }{
+        .{
+            .path = "test-data/test-data/MaxMind-DB-test-decoder-value-limit.mmdb",
+            .want = null,
+        },
+        .{
+            .path = "test-data/test-data/MaxMind-DB-test-decoder-value-limit-over.mmdb",
+            .want = error.TooManyValues,
+        },
+        .{
+            .path = "test-data/test-data/MaxMind-DB-test-decoder-value-limit-pointer-heavy.mmdb",
+            .want = null,
+        },
+        .{
+            .path = "test-data/test-data/MaxMind-DB-test-decoder-payload-limit.mmdb",
+            .want = null,
+        },
+        .{
+            .path = "test-data/test-data/MaxMind-DB-test-decoder-payload-limit-over.mmdb",
+            .want = error.PayloadTooLarge,
+        },
+        .{
+            .path = "test-data/test-data/MaxMind-DB-test-pointer-decoder-dos.mmdb",
+            .want = error.TooManyValues,
+        },
+        .{
+            .path = "test-data/test-data/MaxMind-DB-test-pointer-decoder-dos-ipv6.mmdb",
+            .want = error.TooManyValues,
+        },
+        .{
+            .path = "test-data/test-data/MaxMind-DB-test-payload-amplification-dos.mmdb",
+            .want = error.PayloadTooLarge,
+        },
+        .{
+            .path = "test-data/test-data/MaxMind-DB-test-payload-amplification-dos-string.mmdb",
+            .want = error.PayloadTooLarge,
+        },
+        .{
+            .path = "test-data/test-data/MaxMind-DB-test-payload-amplification-dos-worst-case.mmdb",
+            .want = error.PayloadTooLarge,
+        },
+    };
+
+    for (tests) |tc| {
+        if (tc.want) |want| {
+            try expectError(want, decodeAll(tc.path));
+        } else {
+            const n = try decodeAll(tc.path);
+            try expect(n > 0);
+        }
+    }
+}
+
+test "path lookup shares one budget with the value it selects" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/MaxMind-DB-test-decode-path-shared-budget.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    var it = try db.networks(null, .{});
+    const result = (try it.next()).?;
+    try expectError(
+        error.PayloadTooLarge,
+        db.getPath(result, &.{"target"}),
+    );
+}
+
+test "reject metadata whose payload exceeds the limit" {
+    try expectError(
+        error.PayloadTooLarge,
+        Reader.mmap(
+            allocator,
+            io,
+            "test-data/test-data/MaxMind-DB-test-metadata-payload-limit.mmdb",
+            .{},
+        ),
+    );
+}
+
+test "reject corrupt databases at open" {
+    const tests = [_]struct {
+        path: []const u8,
+        want: anyerror,
+    }{
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-metadata-marker-only.mmdb",
+            .want = error.InvalidDataOffset,
+        },
+        .{
+            .path = "test-data/bad-data/maxminddb-golang/cyclic-data-structure.mmdb",
+            .want = error.InvalidDataOffset,
+        },
+        .{
+            .path = "test-data/bad-data/maxminddb-golang/invalid-bytes-length.mmdb",
+            .want = error.InvalidDataOffset,
+        },
+        .{
+            .path = "test-data/bad-data/maxminddb-golang/invalid-string-length.mmdb",
+            .want = error.InvalidDataOffset,
+        },
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-offset-integer-overflow.mmdb",
+            .want = error.InvalidPointer,
+        },
+        .{
+            .path = "test-data/bad-data/maxminddb-golang/metadata-is-an-uint128.mmdb",
+            .want = error.ExpectedStructType,
+        },
+        .{
+            .path = "test-data/bad-data/maxminddb-golang/unexpected-bytes.mmdb",
+            .want = error.ExpectedArray,
+        },
+    };
+
+    for (tests) |tc| {
+        try expectError(
+            tc.want,
+            Reader.mmap(allocator, io, tc.path, .{}),
+        );
+    }
+}
+
+test "reject a database whose separator record is out of range" {
+    const paths = [_][]const u8{
+        "test-data/bad-data/libmaxminddb/libmaxminddb-separator-record-max-left.mmdb",
+        "test-data/bad-data/libmaxminddb/libmaxminddb-separator-record-min-left.mmdb",
+        "test-data/bad-data/libmaxminddb/libmaxminddb-separator-record-min-right.mmdb",
+    };
+    for (paths) |path| {
+        try expectError(error.CorruptedTree, decodeAll(path));
+    }
+}
+
+test "reject a map key that is not a string" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/bad-data/maxminddb-python/bad-unicode-in-map-key.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    const ip = try std.Io.net.IpAddress.parse("163.254.149.39", 0);
+    const result = (try db.lookup(ip, .{})).?;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    try expectError(
+        error.ExpectedString,
+        db.decodeUnmanaged(any.Value, arena.allocator(), result, .{}),
+    );
+}
+
+test "accept corrupt-corpus databases that are structurally valid" {
+    const paths = [_][]const u8{
+        "test-data/bad-data/libmaxminddb/libmaxminddb-empty-array-last-in-metadata.mmdb",
+        "test-data/bad-data/libmaxminddb/libmaxminddb-empty-map-last-in-metadata.mmdb",
+        "test-data/bad-data/libmaxminddb/libmaxminddb-uint64-max-epoch.mmdb",
+        "test-data/bad-data/libmaxminddb/libmaxminddb-corrupt-search-tree.mmdb",
+    };
+    for (paths) |path| {
+        _ = try decodeAll(path);
     }
 }
 

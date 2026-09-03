@@ -54,8 +54,7 @@ fn decodeAny(
             try d.descend();
             defer d.ascend();
 
-            // Cap the entry count by the bytes remaining.
-            try d.requireBytes(field.size);
+            try d.boundArray(field.size);
 
             const items = try allocator.alloc(Value, field.size);
             for (items) |*item| {
@@ -67,8 +66,7 @@ fn decodeAny(
             try d.descend();
             defer d.ascend();
 
-            // Cap the entry count by half the bytes remaining.
-            try d.requireBytes(field.size * 2);
+            try d.boundMap(field.size);
 
             const entries = try allocator.alloc(Value.Entry, field.size);
             var n: usize = 0;
@@ -423,13 +421,13 @@ test "decode rejects a key pointer to a pointer" {
     );
 }
 
-test "decode bounds pointer amplification with the traversal budget" {
+test "decode bounds pointer amplification with the follow limit" {
     // An array of three pointers all targeting the same shared string.
     // Depth stays shallow, so only the budget catches it.
     var d = decoder.Decoder{
         .src = &.{ 0x03, 0x04, 0x20, 0x08, 0x20, 0x08, 0x20, 0x08, 0x42, 0x68, 0x69 },
         .offset = 0,
-        .budget = 2,
+        .pointer_follows = decoder.max_pointer_follows - 2,
     };
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

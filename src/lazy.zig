@@ -43,6 +43,7 @@ pub const Value = union(enum) {
                     .src = d.src,
                     .payload_offset = payload_offset,
                     .len = field.size,
+                    .strict = d.strict,
                 },
             },
             .Map => .{
@@ -50,6 +51,7 @@ pub const Value = union(enum) {
                     .src = d.src,
                     .payload_offset = payload_offset,
                     .len = field.size,
+                    .strict = d.strict,
                 },
             },
             else => return decoder.DecodeError.UnsupportedFieldType,
@@ -64,6 +66,7 @@ pub const Map = struct {
     src: []const u8,
     payload_offset: usize,
     len: usize,
+    strict: bool = true,
 
     /// Returns the value for the key or null if the key is absent.
     /// Deliberately no indexed iteration on the lazy side because enumeration is slow.
@@ -71,6 +74,7 @@ pub const Map = struct {
         var d = decoder.Decoder{
             .src = self.src,
             .offset = self.payload_offset,
+            .strict = self.strict,
         };
         if (!try seekKey(&d, self.len, key)) {
             return null;
@@ -85,12 +89,14 @@ pub const Array = struct {
     src: []const u8,
     payload_offset: usize,
     len: usize,
+    strict: bool = true,
 
     /// Returns the i-th item or null if i is out of bounds.
     pub fn at(self: Array, i: usize) !?Value {
         var d = decoder.Decoder{
             .src = self.src,
             .offset = self.payload_offset,
+            .strict = self.strict,
         };
         if (!try seekIndex(&d, self.len, i)) {
             return null;
@@ -100,27 +106,22 @@ pub const Array = struct {
     }
 };
 
-/// Walks a path from offset in src.
+/// Walks a path from the decoder's position.
 /// Each step is a map key or an array index ("-1" is the last element).
 /// Returns null if any step does not resolve.
-pub fn walkPath(src: []const u8, offset: usize, path: []const []const u8) !?Value {
-    var d = decoder.Decoder{
-        .src = src,
-        .offset = offset,
-    };
-
+pub fn walkPath(d: *decoder.Decoder, path: []const []const u8) !?Value {
     for (path) |step| {
         // Descend into the container at the current position (walking moves forward only).
         const field = try d.resolveField();
         switch (field.type) {
             .Map => {
-                if (!try seekKey(&d, field.size, step)) {
+                if (!try seekKey(d, field.size, step)) {
                     return null;
                 }
             },
             .Array => {
                 const index = arrayIndex(step, field.size) orelse return null;
-                if (!try seekIndex(&d, field.size, index)) {
+                if (!try seekIndex(d, field.size, index)) {
                     return null;
                 }
             },
@@ -128,7 +129,7 @@ pub fn walkPath(src: []const u8, offset: usize, path: []const []const u8) !?Valu
         }
     }
 
-    return try Value.decode(&d);
+    return try Value.decode(d);
 }
 
 /// Parses a decimal array index for an array of len elements,
@@ -178,9 +179,12 @@ fn seekIndex(d: *decoder.Decoder, len: usize, index: usize) !bool {
 
 test "resolveField rejects a pointer to a pointer" {
     // The pointer at offset 0 targets offset 2, which is itself a pointer (illegal).
-    const src: []const u8 = &.{ 0x20, 0x02, 0x20, 0x00 };
+    var d = decoder.Decoder{
+        .src = &.{ 0x20, 0x02, 0x20, 0x00 },
+        .offset = 0,
+    };
     try std.testing.expectError(
         error.InvalidPointer,
-        walkPath(src, 0, &.{}),
+        walkPath(&d, &.{}),
     );
 }
