@@ -12,11 +12,20 @@ pub const Network = struct {
         .ip = std.Io.net.IpAddress.parse("::", 0) catch unreachable,
     };
 
+    pub const ParseError = error{
+        InvalidAddress,
+        InvalidPrefixLen,
+    };
+
     // Parses an IP address or CIDR string like "1.0.0.0/24".
-    pub fn parse(s: []const u8) !Network {
+    pub fn parse(s: []const u8) ParseError!Network {
         if (std.mem.findScalar(u8, s, '/')) |sep| {
-            const ip = try std.Io.net.IpAddress.parse(s[0..sep], 0);
-            const prefix_len = try std.fmt.parseInt(usize, s[sep + 1 ..], 10);
+            const ip = std.Io.net.IpAddress.parse(s[0..sep], 0) catch {
+                return error.InvalidAddress;
+            };
+            const prefix_len = std.fmt.parseInt(usize, s[sep + 1 ..], 10) catch {
+                return error.InvalidPrefixLen;
+            };
             const max_prefix_len: usize = switch (ip) {
                 .ip4 => 32,
                 .ip6 => 128,
@@ -31,7 +40,9 @@ pub const Network = struct {
             };
         }
 
-        const ip = try std.Io.net.IpAddress.parse(s, 0);
+        const ip = std.Io.net.IpAddress.parse(s, 0) catch {
+            return error.InvalidAddress;
+        };
         return .{
             .ip = ip,
             .prefix_len = switch (ip) {
@@ -41,7 +52,7 @@ pub const Network = struct {
         };
     }
 
-    pub fn format(self: Network, writer: anytype) !void {
+    pub fn format(self: Network, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (self.ip) {
             .ip4 => |v| {
                 const b = v.bytes;
@@ -123,6 +134,9 @@ test "Network.parse" {
     // A prefix wider than the address is rejected.
     try std.testing.expectError(error.InvalidPrefixLen, Network.parse("1.2.3.4/33"));
     try std.testing.expectError(error.InvalidPrefixLen, Network.parse("2001:db8::/129"));
+    try std.testing.expectError(error.InvalidPrefixLen, Network.parse("1.2.3.4/x"));
+    try std.testing.expectError(error.InvalidAddress, Network.parse("nope/8"));
+    try std.testing.expectError(error.InvalidAddress, Network.parse("1.2.3"));
 
     // The exact boundary is accepted.
     var got = try Network.parse("1.2.3.4/32");

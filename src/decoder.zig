@@ -1,21 +1,5 @@
 const std = @import("std");
 
-pub const DecodeError = error{
-    UnsupportedFieldType,
-    ExpectedString,
-    ExpectedStringOrBytes,
-    InvalidIntegerSize,
-    InvalidBoolSize,
-    InvalidDoubleSize,
-    InvalidFloatSize,
-    TooDeep,
-    TooManyPointers,
-    TooManyValues,
-    PayloadTooLarge,
-    InvalidPointer,
-    InvalidDataOffset,
-};
-
 // Maximum nesting depth for decoded data structures.
 pub const max_data_structure_depth: usize = 512;
 
@@ -89,9 +73,25 @@ pub const Decoder = struct {
     decoded_values: usize = 1,
     strict: bool = true,
 
+    /// The data does not decode, or a decode limit was hit.
+    pub const Error = error{
+        UnknownFieldType,
+        InvalidMapKey,
+        InvalidIntegerSize,
+        InvalidBoolSize,
+        InvalidDoubleSize,
+        InvalidFloatSize,
+        InvalidPointer,
+        InvalidDataOffset,
+        TooDeep,
+        TooManyPointers,
+        TooManyValues,
+        PayloadTooLarge,
+    };
+
     // Bounds an array's declared item count.
     // An item needs at least one byte.
-    pub fn boundArray(self: *Decoder, items: usize) DecodeError!void {
+    pub fn boundArray(self: *Decoder, items: usize) Error!void {
         try self.requireBytes(items);
         return self.chargeEntries(items);
     }
@@ -99,7 +99,7 @@ pub const Decoder = struct {
     // Bounds a map's declared pair count.
     // A pair needs at least two bytes, and charges one.
     // The spec counts its key and value separately, which is one of the accountings it permits.
-    pub fn boundMap(self: *Decoder, pairs: usize) DecodeError!void {
+    pub fn boundMap(self: *Decoder, pairs: usize) Error!void {
         try self.requireBytes(pairs * 2);
         return self.chargeEntries(pairs);
     }
@@ -107,25 +107,25 @@ pub const Decoder = struct {
     // Adds to this decode's running total and fails past the limit.
     // A shared pointer target is charged every time it expands,
     // which is what stops a small record from describing a huge structure.
-    fn chargeEntries(self: *Decoder, entries: usize) DecodeError!void {
+    fn chargeEntries(self: *Decoder, entries: usize) Error!void {
         self.decoded_values += entries;
         if (self.decoded_values > max_decoded_values) {
-            return DecodeError.TooManyValues;
+            return error.TooManyValues;
         }
     }
 
     // Ensures at least n bytes remain from the current offset.
-    pub inline fn requireBytes(self: *const Decoder, n: usize) DecodeError!void {
+    pub inline fn requireBytes(self: *const Decoder, n: usize) Error!void {
         // Saturating subtraction avoids underflow when offset is past the end.
         if (n > self.src.len -| self.offset) {
-            return DecodeError.InvalidDataOffset;
+            return error.InvalidDataOffset;
         }
     }
 
     // Enter one nesting level or fail if that would exceed the depth limit.
-    pub fn descend(self: *Decoder) DecodeError!void {
+    pub fn descend(self: *Decoder) Error!void {
         if (self.depth >= max_data_structure_depth) {
-            return DecodeError.TooDeep;
+            return error.TooDeep;
         }
 
         self.depth += 1;
@@ -138,20 +138,20 @@ pub const Decoder = struct {
     // Resolves a pointer to its target offset.
     // Rejects a target that lands past the data section or that begins with another pointer:
     // both indicate a corrupt DB.
-    pub fn followPointer(self: *Decoder, field_size: usize) DecodeError!usize {
+    pub fn followPointer(self: *Decoder, field_size: usize) Error!usize {
         self.pointer_follows += 1;
         if (self.pointer_follows > max_pointer_follows) {
-            return DecodeError.TooManyPointers;
+            return error.TooManyPointers;
         }
 
         const next = try self.decodePointer(field_size);
         if (next >= self.src.len) {
-            return DecodeError.InvalidPointer;
+            return error.InvalidPointer;
         }
 
         const control: ControlByte = @bitCast(self.src[next]);
         if (control.type == @intFromEnum(FieldType.Pointer)) {
-            return DecodeError.InvalidPointer;
+            return error.InvalidPointer;
         }
 
         return next;
@@ -159,7 +159,7 @@ pub const Decoder = struct {
 
     // Reads a map key, following a pointer to it if present.
     // Map keys are always strings per the spec.
-    pub inline fn decodeStringKey(self: *Decoder) DecodeError![]const u8 {
+    pub inline fn decodeStringKey(self: *Decoder) Error![]const u8 {
         const field = try self.decodeFieldHeader();
         if (field.type == .String) {
             return self.decodeBytes(field.size);
@@ -175,7 +175,7 @@ pub const Decoder = struct {
 
             const key_field = try self.decodeFieldHeader();
             if (key_field.type != .String) {
-                return DecodeError.ExpectedString;
+                return error.InvalidMapKey;
             }
 
             const key = try self.decodeBytes(key_field.size);
@@ -185,13 +185,13 @@ pub const Decoder = struct {
             return key;
         }
 
-        return DecodeError.ExpectedString;
+        return error.InvalidMapKey;
     }
 
     // Skips a value in the database without decoding it.
     // This is used when the database has fields that don't exist in the target struct
     // or are excluded by field name filtering.
-    pub fn skipValue(self: *Decoder) !void {
+    pub fn skipValue(self: *Decoder) Error!void {
         const field = try self.decodeFieldHeader();
 
         switch (field.type) {
@@ -232,7 +232,7 @@ pub const Decoder = struct {
     // Pointers in the metadata start from the beginning of the metadata section.
     // field_size is the raw 5 control-byte bits, NOT a payload byte count as in
     // the value decoders: bits 3-4 give the pointer size, bits 0-2 its high bits.
-    pub fn decodePointer(self: *Decoder, field_size: usize) DecodeError!usize {
+    pub fn decodePointer(self: *Decoder, field_size: usize) Error!usize {
         const pointer_value_offset = [_]usize{ 0, 0, 2048, 526_336, 0 };
         const pointer_size = ((field_size >> 3) & 0x3) + 1;
         if (self.strict) {
@@ -252,14 +252,14 @@ pub const Decoder = struct {
 
     // Decodes a variable length byte sequence containing any sort of binary data.
     // If the length is zero then this a zero-length byte sequence.
-    pub fn decodeBytes(self: *Decoder, field_size: usize) DecodeError![]const u8 {
+    pub fn decodeBytes(self: *Decoder, field_size: usize) Error![]const u8 {
         // Must not over-read adjacent memory into the returned slice.
         try self.requireBytes(field_size);
 
         // Charged per occurrence, so re-expanding a shared target charges again.
         self.payload_bytes += field_size;
         if (self.payload_bytes > max_payload_bytes) {
-            return DecodeError.PayloadTooLarge;
+            return error.PayloadTooLarge;
         }
 
         const offset = self.offset;
@@ -270,9 +270,9 @@ pub const Decoder = struct {
     }
 
     // Decodes IEEE-754 double (binary64) in big-endian format.
-    pub fn decodeDouble(self: *Decoder, field_size: usize) !f64 {
+    pub fn decodeDouble(self: *Decoder, field_size: usize) Error!f64 {
         if (field_size != 8) {
-            return DecodeError.InvalidDoubleSize;
+            return error.InvalidDoubleSize;
         }
 
         try self.requireBytes(field_size);
@@ -296,9 +296,9 @@ pub const Decoder = struct {
     }
 
     // Decodes an IEEE-754 float (binary32) stored in big-endian format.
-    pub fn decodeFloat(self: *Decoder, field_size: usize) !f32 {
+    pub fn decodeFloat(self: *Decoder, field_size: usize) Error!f32 {
         if (field_size != 4) {
-            return DecodeError.InvalidFloatSize;
+            return error.InvalidFloatSize;
         }
 
         try self.requireBytes(field_size);
@@ -320,9 +320,9 @@ pub const Decoder = struct {
     // Decodes 16-bit, 32-bit, 64-bit, and 128-bit unsigned integers.
     // It also supports 32-bit signed integers.
     // See https://maxmind.github.io/MaxMind-DB/#integer-formats.
-    pub fn decodeInteger(self: *Decoder, T: type, field_size: usize) !T {
+    pub fn decodeInteger(self: *Decoder, T: type, field_size: usize) Error!T {
         if (field_size > @sizeOf(T)) {
-            return DecodeError.InvalidIntegerSize;
+            return error.InvalidIntegerSize;
         }
 
         try self.requireBytes(field_size);
@@ -341,18 +341,18 @@ pub const Decoder = struct {
     }
 
     // Decodes a boolean value.
-    pub fn decodeBool(_: *Decoder, field_size: usize) !bool {
+    pub fn decodeBool(_: *Decoder, field_size: usize) Error!bool {
         // The length information for a boolean type will always be 0 or 1, indicating the value.
         // There is no payload for this field.
         return switch (field_size) {
             0, 1 => field_size != 0,
-            else => DecodeError.InvalidBoolSize,
+            else => error.InvalidBoolSize,
         };
     }
 
     // Reads a field header, following any pointer chain to the target's payload,
     // and returns the resolved (non-pointer) field.
-    pub inline fn resolveField(self: *Decoder) DecodeError!FieldHeader {
+    pub inline fn resolveField(self: *Decoder) Error!FieldHeader {
         const field = try self.decodeFieldHeader();
         if (field.type != .Pointer) {
             return field;
@@ -365,13 +365,13 @@ pub const Decoder = struct {
     }
 
     // Checks whether the value at the current offset is an empty map, following any pointers.
-    pub fn isEmptyMap(self: *Decoder) !bool {
+    pub fn isEmptyMap(self: *Decoder) Error!bool {
         const field = try self.resolveField();
         return field.type == .Map and field.size == 0;
     }
 
     // Decodes a control byte into a field type and payload size.
-    pub fn decodeFieldHeader(self: *Decoder) !FieldHeader {
+    pub fn decodeFieldHeader(self: *Decoder) Error!FieldHeader {
         if (self.strict) {
             try self.requireBytes(1);
         }
@@ -398,7 +398,7 @@ pub const Decoder = struct {
             // Extended types are 7 (Map) through 15 (Float), so valid extended byte values are 0-8.
             const ext_byte = self.src[self.offset];
             if (ext_byte > 8) {
-                return DecodeError.UnsupportedFieldType;
+                return error.UnknownFieldType;
             }
 
             field_type = @enumFromInt(ext_byte + 7);
@@ -513,18 +513,23 @@ test "decodeStringKey rejects a non-string key" {
         },
         .offset = 0,
     };
-    try std.testing.expectError(error.ExpectedString, d.decodeStringKey());
+    try std.testing.expectError(error.InvalidMapKey, d.decodeStringKey());
 }
 
 test "decodeStringKey follows a pointer key and rewinds to the value" {
-    // The key at offset 0 is a pointer to offset 4, where "hi" (0x42 = String, size 2) lives.
-    // The value would begin at offset 2, right after the pointer bytes.
-    var d = Decoder{
-        .src = &.{ 0x20, 0x04, 0xAB, 0xCD, 0x42, 0x68, 0x69 },
-        .offset = 0,
-    };
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "test-data/test-data/maps-with-pointers.raw",
+        std.testing.allocator,
+        .limited(1024),
+    );
+    defer std.testing.allocator.free(raw);
+
+    // The map starts at 0x16, so its pointer key sits at 0x17.
+    var d = Decoder{ .src = raw, .offset = 0x17 };
 
     const key = try d.decodeStringKey();
-    try std.testing.expectEqualStrings("hi", key);
-    try std.testing.expectEqual(@as(usize, 2), d.offset);
+    try std.testing.expectEqualStrings("long_key", key);
+    // The value begins right after the pointer bytes, not at the target.
+    try std.testing.expectEqual(@as(usize, 0x19), d.offset);
 }

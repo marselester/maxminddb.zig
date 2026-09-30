@@ -1,23 +1,25 @@
 const std = @import("std");
 
 const reader = @import("reader.zig");
-const decoder = @import("decoder.zig");
-const typed = @import("typed.zig");
+const cache = @import("cache.zig");
 const collection = @import("collection.zig");
 const net = @import("net.zig");
 const filter = @import("filter.zig");
+const errors = @import("errors.zig");
 
 pub const any = @import("any.zig");
 pub const lazy = @import("lazy.zig");
 pub const geolite2 = @import("geolite2.zig");
 pub const geoip2 = @import("geoip2.zig");
 
-pub const Error = reader.ReadError || decoder.DecodeError || typed.DecodeError;
 pub const Reader = reader.Reader;
 pub const Metadata = reader.Metadata;
 pub const DecodedIterator = reader.DecodedIterator;
 pub const NetworkIterator = reader.NetworkIterator;
-pub const Cache = reader.Cache;
+pub const Cache = cache.Cache;
+pub const Error = errors.Error;
+pub const ErrorCategory = errors.ErrorCategory;
+pub const errorCategory = errors.errorCategory;
 pub const Network = net.Network;
 pub const Map = collection.Map;
 pub const Array = collection.Array;
@@ -103,22 +105,7 @@ pub const DatabaseType = enum {
 
 test {
     std.testing.refAllDecls(@This());
-}
-
-fn expectEqualMaps(
-    map: anytype,
-    keys: []const []const u8,
-    values: []const []const u8,
-) !void {
-    try expectEqual(map.entries.len, keys.len);
-
-    for (keys, values) |key, want_value| {
-        const got_value = map.get(key) orelse {
-            std.debug.print("map key=\"{s}\" was not found\n", .{key});
-            return error.MapKeyNotFound;
-        };
-        try expectEqualStrings(want_value, got_value);
-    }
+    _ = @import("schema_test.zig");
 }
 
 fn decodeAll(path: []const u8) !usize {
@@ -145,7 +132,28 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 const expectEqualDeep = std.testing.expectEqualDeep;
 const expectError = std.testing.expectError;
 
-test "Metadata.decodeAs any.Value" {
+test "open and mmap return the OS error for a bad path" {
+    const tests = [_]struct {
+        path: []const u8,
+        want: anyerror,
+    }{
+        .{
+            .path = "test-data/test-data/does-not-exist.mmdb",
+            .want = error.FileNotFound,
+        },
+        .{
+            .path = "test-data",
+            .want = error.IsDir,
+        },
+    };
+
+    for (tests) |tc| {
+        try expectError(tc.want, Reader.open(allocator, io, tc.path, .{}));
+        try expectError(tc.want, Reader.mmap(allocator, io, tc.path, .{}));
+    }
+}
+
+test "Reader.decodeMetadata" {
     var db = try Reader.mmap(
         allocator,
         io,
@@ -157,24 +165,30 @@ test "Metadata.decodeAs any.Value" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const meta = try Metadata.decodeAs(any.Value, arena.allocator(), db.src);
+    const meta = try db.decodeMetadata(arena.allocator());
     try expectEqualStrings("GeoLite2-City", meta.get("database_type").?.string);
     try expectEqual(6, meta.get("ip_version").?.uint16);
     try expectEqual(2, meta.get("binary_format_major_version").?.uint16);
 }
 
-test "reject data nested past the depth limit" {
-    const paths = [_][]const u8{
-        "test-data/bad-data/libmaxminddb/libmaxminddb-deep-nesting.mmdb",
-        "test-data/bad-data/libmaxminddb/libmaxminddb-deep-array-nesting.mmdb",
-    };
-    for (paths) |path| {
-        var db = try Reader.mmap(allocator, io, path, .{});
-        defer db.close();
+test "reject metadata with a non-string database_type" {
+    const src = try std.Io.Dir.cwd().readFileAlloc(
+        io,
+        "test-data/test-data/MaxMind-DB-test-ipv4-24.mmdb",
+        allocator,
+        .limited(4096),
+    );
+    defer allocator.free(src);
 
-        var it = try db.scan(any.Value, allocator, null, .{});
-        try expectError(error.TooDeep, it.next());
-    }
+    const key = "database_type";
+    const value = std.mem.findLast(u8, src, key).? + key.len;
+    try expectEqual(0x44, src[value]);
+    src[value] = 0xC4;
+
+    try expectError(
+        error.InvalidMetadata,
+        Reader.openBytes(allocator, src, .{}),
+    );
 }
 
 test "reject a database with broken pointers" {
@@ -195,20 +209,6 @@ test "reject a database with broken pointers" {
     }
 
     return error.TestExpectedBrokenPointer;
-}
-
-test "reject a database with an oversized container" {
-    const paths = [_][]const u8{
-        "test-data/bad-data/libmaxminddb/libmaxminddb-oversized-map.mmdb",
-        "test-data/bad-data/libmaxminddb/libmaxminddb-oversized-array.mmdb",
-    };
-    for (paths) |path| {
-        var db = try Reader.mmap(allocator, io, path, .{});
-        defer db.close();
-
-        var it = try db.scan(any.Value, allocator, net.Network.all_ipv4, .{});
-        try expectError(error.InvalidDataOffset, it.next());
-    }
 }
 
 test "strict off decodes a valid database identically" {
@@ -348,14 +348,62 @@ test "reject metadata whose payload exceeds the limit" {
     );
 }
 
-test "reject corrupt databases at open" {
+test "each bad-data fixture decodes fully or fails with its known error" {
     const tests = [_]struct {
         path: []const u8,
-        want: anyerror,
+        want: ?anyerror,
     }{
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-corrupt-search-tree.mmdb",
+            .want = null,
+        },
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-deep-array-nesting.mmdb",
+            .want = error.TooDeep,
+        },
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-deep-nesting.mmdb",
+            .want = error.TooDeep,
+        },
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-empty-array-last-in-metadata.mmdb",
+            .want = null,
+        },
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-empty-map-last-in-metadata.mmdb",
+            .want = null,
+        },
         .{
             .path = "test-data/bad-data/libmaxminddb/libmaxminddb-metadata-marker-only.mmdb",
             .want = error.InvalidDataOffset,
+        },
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-offset-integer-overflow.mmdb",
+            .want = error.InvalidPointer,
+        },
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-oversized-array.mmdb",
+            .want = error.InvalidDataOffset,
+        },
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-oversized-map.mmdb",
+            .want = error.InvalidDataOffset,
+        },
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-separator-record-max-left.mmdb",
+            .want = error.CorruptedTree,
+        },
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-separator-record-min-left.mmdb",
+            .want = error.CorruptedTree,
+        },
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-separator-record-min-right.mmdb",
+            .want = error.CorruptedTree,
+        },
+        .{
+            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-uint64-max-epoch.mmdb",
+            .want = null,
         },
         .{
             .path = "test-data/bad-data/maxminddb-golang/cyclic-data-structure.mmdb",
@@ -366,39 +414,59 @@ test "reject corrupt databases at open" {
             .want = error.InvalidDataOffset,
         },
         .{
+            .path = "test-data/bad-data/maxminddb-golang/invalid-data-record-offset.mmdb",
+            .want = error.UnknownFieldType,
+        },
+        .{
+            .path = "test-data/bad-data/maxminddb-golang/invalid-map-key-length.mmdb",
+            .want = error.InvalidDataOffset,
+        },
+        .{
             .path = "test-data/bad-data/maxminddb-golang/invalid-string-length.mmdb",
             .want = error.InvalidDataOffset,
         },
         .{
-            .path = "test-data/bad-data/libmaxminddb/libmaxminddb-offset-integer-overflow.mmdb",
-            .want = error.InvalidPointer,
-        },
-        .{
             .path = "test-data/bad-data/maxminddb-golang/metadata-is-an-uint128.mmdb",
-            .want = error.ExpectedStructType,
+            .want = error.InvalidMetadata,
         },
         .{
             .path = "test-data/bad-data/maxminddb-golang/unexpected-bytes.mmdb",
-            .want = error.ExpectedArray,
+            .want = error.InvalidMetadata,
+        },
+        .{
+            .path = "test-data/bad-data/maxminddb-python/bad-unicode-in-map-key.mmdb",
+            .want = error.CorruptedTree,
         },
     };
 
     for (tests) |tc| {
-        try expectError(
-            tc.want,
-            Reader.mmap(allocator, io, tc.path, .{}),
-        );
+        if (tc.want) |want| {
+            try expectError(want, decodeAll(tc.path));
+        } else {
+            _ = try decodeAll(tc.path);
+        }
     }
 }
 
-test "reject a database whose separator record is out of range" {
-    const paths = [_][]const u8{
-        "test-data/bad-data/libmaxminddb/libmaxminddb-separator-record-max-left.mmdb",
-        "test-data/bad-data/libmaxminddb/libmaxminddb-separator-record-min-left.mmdb",
-        "test-data/bad-data/libmaxminddb/libmaxminddb-separator-record-min-right.mmdb",
-    };
-    for (paths) |path| {
-        try expectError(error.CorruptedTree, decodeAll(path));
+test "a broken search tree reports InvalidTreeNode from lookup and from iteration" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/MaxMind-DB-test-broken-search-tree-24.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    // 255.255.255.255 is the one address whose path reaches the broken node.
+    const ip = try std.Io.net.IpAddress.parse("255.255.255.255", 0);
+    try expectError(error.InvalidTreeNode, db.lookup(ip, .{}));
+
+    var it = try db.networks(null, .{});
+    while (true) {
+        _ = (it.next() catch |err| {
+            try expectEqual(error.InvalidTreeNode, err);
+            break;
+        }) orelse return error.TestExpectedError;
     }
 }
 
@@ -417,39 +485,9 @@ test "reject a map key that is not a string" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     try expectError(
-        error.ExpectedString,
+        error.InvalidMapKey,
         db.decodeUnmanaged(any.Value, arena.allocator(), result, .{}),
     );
-}
-
-test "accept corrupt-corpus databases that are structurally valid" {
-    const paths = [_][]const u8{
-        "test-data/bad-data/libmaxminddb/libmaxminddb-empty-array-last-in-metadata.mmdb",
-        "test-data/bad-data/libmaxminddb/libmaxminddb-empty-map-last-in-metadata.mmdb",
-        "test-data/bad-data/libmaxminddb/libmaxminddb-uint64-max-epoch.mmdb",
-        "test-data/bad-data/libmaxminddb/libmaxminddb-corrupt-search-tree.mmdb",
-    };
-    for (paths) |path| {
-        _ = try decodeAll(path);
-    }
-}
-
-test "reject a database with an invalid data record offset" {
-    try expectError(error.UnsupportedFieldType, Reader.mmap(
-        allocator,
-        io,
-        "test-data/bad-data/maxminddb-golang/invalid-data-record-offset.mmdb",
-        .{},
-    ));
-}
-
-test "reject a database with an invalid map key length" {
-    try expectError(error.InvalidDataOffset, Reader.mmap(
-        allocator,
-        io,
-        "test-data/bad-data/maxminddb-golang/invalid-map-key-length.mmdb",
-        .{},
-    ));
 }
 
 test "decode every MMDB data type" {
@@ -533,7 +571,7 @@ test "typed decode surfaces a type error for each mismatched field" {
     defer db.close();
 
     // 1.1.1.0 holds one field of every wire type.
-    // Declaring a field with the right name but a wrong Zig type returns a decode error.
+    // Declaring a field with the right name but a wrong Zig type returns a schema error.
     const ip = try std.Io.net.IpAddress.parse("1.1.1.0", 0);
     const tests = .{
         // Scalar wire value decoded into the wrong scalar type.
@@ -586,6 +624,10 @@ test "typed decode surfaces a type error for each mismatched field" {
             struct { uint32: Array(u32) = .{} },
             error.ExpectedArray,
         },
+        .{
+            struct { uint32: i64 = 0 },
+            error.UnsupportedType,
+        },
     };
 
     inline for (tests) |tc| {
@@ -593,11 +635,32 @@ test "typed decode surfaces a type error for each mismatched field" {
             tc[1],
             db.query(tc[0], allocator, ip, .{}),
         );
+
+        try expectEqual(.schema, errorCategory(tc[1]));
     }
 }
 
 test "reject invalid metadata" {
-    try expectError(error.MetadataStartNotFound, Metadata.decode(allocator, "not a valid mmdb"));
+    try expectError(
+        error.MetadataStartNotFound,
+        Reader.openBytes(allocator, "not a valid mmdb", .{}),
+    );
+}
+
+test "reject an empty file the same way on every open path" {
+    try expectError(error.EmptyFile, Reader.openBytes(allocator, "", .{}));
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile(io, "empty.mmdb", .{});
+    file.close(io);
+
+    const path = try tmp.dir.realPathFileAlloc(io, "empty.mmdb", allocator);
+    defer allocator.free(path);
+
+    try expectError(error.EmptyFile, Reader.open(allocator, io, path, .{}));
+    try expectError(error.EmptyFile, Reader.mmap(allocator, io, path, .{}));
 }
 
 test "Reader.open" {
@@ -693,654 +756,6 @@ test DatabaseType {
     // Precision variants map to their base types.
     try expectEqual(DatabaseType.geoip_enterprise, DatabaseType.new("GeoIP2-Precision-Enterprise"));
     try expectEqual(DatabaseType.geoip_enterprise, DatabaseType.new("GeoIP2-Precision-Enterprise-Shield"));
-}
-
-test "GeoLite2 Country" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoLite2-Country-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geolite_country, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.query(geolite2.Country, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    try expectEqualStrings("EU", got.value.continent.code);
-    try expectEqual(6255148, got.value.continent.geoname_id);
-    try expectEqualMaps(
-        got.value.continent.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Europa", "Europe", "Europa", "Europe", "ヨーロッパ", "Europa", "Европа", "欧洲" },
-    );
-
-    try expectEqual(2661886, got.value.country.geoname_id);
-    try expectEqual(true, got.value.country.is_in_european_union);
-    try expectEqualStrings("SE", got.value.country.iso_code);
-    try expectEqualMaps(
-        got.value.country.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Schweden", "Sweden", "Suecia", "Suède", "スウェーデン王国", "Suécia", "Швеция", "瑞典" },
-    );
-
-    try expectEqual(2921044, got.value.registered_country.geoname_id);
-    try expectEqual(true, got.value.registered_country.is_in_european_union);
-    try expectEqualStrings("DE", got.value.registered_country.iso_code);
-    try expectEqualMaps(
-        got.value.registered_country.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Deutschland", "Germany", "Alemania", "Allemagne", "ドイツ連邦共和国", "Alemanha", "Германия", "德国" },
-    );
-
-    try expectEqualDeep(geolite2.Country.RepresentedCountry{}, got.value.represented_country);
-
-    // Verify network masking for an IPv6 lookup.
-    const ipv6 = try std.Io.net.IpAddress.parse("2001:218:ffff:ffff:ffff:ffff:ffff:ffff", 0);
-    const got_v6 = (try db.query(geolite2.Country, allocator, ipv6, .{})).?;
-    defer got_v6.deinit();
-
-    try expectEqualStrings("JP", got_v6.value.country.iso_code);
-
-    var buf: [64]u8 = undefined;
-    const got_network = try std.fmt.bufPrint(&buf, "{f}", .{got_v6.network});
-    try expectEqualStrings("2001:0218:0000:0000:0000:0000:0000:0000/32", got_network);
-}
-
-test "GeoLite2 City" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoLite2-City-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geolite_city, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.query(geolite2.City, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    try expectEqual(2694762, got.value.city.geoname_id);
-    try expectEqualMaps(
-        got.value.city.names.?,
-        &.{ "de", "en", "fr", "ja", "zh-CN" },
-        &.{ "Linköping", "Linköping", "Linköping", "リンシェーピング", "林雪平" },
-    );
-
-    try expectEqualStrings("EU", got.value.continent.code);
-    try expectEqual(6255148, got.value.continent.geoname_id);
-    try expectEqualMaps(
-        got.value.continent.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Europa", "Europe", "Europa", "Europe", "ヨーロッパ", "Europa", "Европа", "欧洲" },
-    );
-
-    try expectEqual(2661886, got.value.country.geoname_id);
-    try expectEqual(true, got.value.country.is_in_european_union);
-    try expectEqualStrings("SE", got.value.country.iso_code);
-    try expectEqualMaps(
-        got.value.country.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Schweden", "Sweden", "Suecia", "Suède", "スウェーデン王国", "Suécia", "Швеция", "瑞典" },
-    );
-
-    try expectEqualDeep(
-        geolite2.City.Location{
-            .accuracy_radius = 76,
-            .latitude = 58.4167,
-            .longitude = 15.6167,
-            .time_zone = "Europe/Stockholm",
-        },
-        got.value.location,
-    );
-
-    try expectEqualDeep(geolite2.City.Postal{}, got.value.postal);
-
-    try expectEqual(2921044, got.value.registered_country.geoname_id);
-    try expectEqual(true, got.value.registered_country.is_in_european_union);
-    try expectEqualStrings("DE", got.value.registered_country.iso_code);
-    try expectEqualMaps(
-        got.value.registered_country.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Deutschland", "Germany", "Alemania", "Allemagne", "ドイツ連邦共和国", "Alemanha", "Германия", "德国" },
-    );
-
-    try expectEqualDeep(geolite2.Country.RepresentedCountry{}, got.value.represented_country);
-
-    try expectEqual(1, got.value.subdivisions.?.items.len);
-    const sub = got.value.subdivisions.?.items[0];
-    try expectEqual(2685867, sub.geoname_id);
-    try expectEqualStrings("E", sub.iso_code);
-    try expectEqualMaps(
-        sub.names.?,
-        &.{ "en", "fr" },
-        &.{ "Östergötland County", "Comté d'Östergötland" },
-    );
-}
-
-test "GeoLite2 ASN" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoLite2-ASN-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geolite_asn, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.query(geolite2.ASN, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    const want = geolite2.ASN{
-        .autonomous_system_number = 29518,
-        .autonomous_system_organization = "Bredband2 AB",
-    };
-    try expectEqualDeep(want, got.value);
-
-    var buf: [64]u8 = undefined;
-    const got_network = try std.fmt.bufPrint(&buf, "{f}", .{got.network});
-    try expectEqualStrings("89.160.0.0/17", got_network);
-}
-
-test "GeoIP2 Country" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP2-Country-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geoip_country, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.query(geoip2.Country, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    try expectEqualStrings("EU", got.value.continent.code);
-    try expectEqual(6255148, got.value.continent.geoname_id);
-    try expectEqualMaps(
-        got.value.continent.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Europa", "Europe", "Europa", "Europe", "ヨーロッパ", "Europa", "Европа", "欧洲" },
-    );
-
-    try expectEqual(2661886, got.value.country.geoname_id);
-    try expectEqual(true, got.value.country.is_in_european_union);
-    try expectEqualStrings("SE", got.value.country.iso_code);
-    try expectEqualMaps(
-        got.value.country.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Schweden", "Sweden", "Suecia", "Suède", "スウェーデン王国", "Suécia", "Швеция", "瑞典" },
-    );
-
-    try expectEqual(2921044, got.value.registered_country.geoname_id);
-    try expectEqual(true, got.value.registered_country.is_in_european_union);
-    try expectEqualStrings("DE", got.value.registered_country.iso_code);
-    try expectEqualMaps(
-        got.value.registered_country.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Deutschland", "Germany", "Alemania", "Allemagne", "ドイツ連邦共和国", "Alemanha", "Германия", "德国" },
-    );
-
-    try expectEqualDeep(geoip2.Country.RepresentedCountry{}, got.value.represented_country);
-
-    try expectEqualDeep(
-        geoip2.Country.Traits{
-            .is_anycast = false,
-        },
-        got.value.traits,
-    );
-
-    const ip2 = try std.Io.net.IpAddress.parse("214.1.1.0", 0);
-    const got2 = (try db.query(geoip2.Country, allocator, ip2, .{})).?;
-    defer got2.deinit();
-
-    try expectEqual(true, got2.value.traits.is_anycast);
-}
-
-test "GeoIP2 Country RepresentedCountry" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP2-Country-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    const ip = try std.Io.net.IpAddress.parse("202.196.224.0", 0);
-    const got = (try db.query(geoip2.Country, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    try expectEqualStrings("AS", got.value.continent.code);
-    try expectEqual(6255147, got.value.continent.geoname_id);
-
-    try expectEqual(1694008, got.value.country.geoname_id);
-    try expectEqualStrings("PH", got.value.country.iso_code);
-
-    try expectEqual(1694008, got.value.registered_country.geoname_id);
-    try expectEqualStrings("PH", got.value.registered_country.iso_code);
-
-    try expectEqual(6252001, got.value.represented_country.geoname_id);
-    try expectEqualStrings("US", got.value.represented_country.iso_code);
-    try expectEqualStrings("military", got.value.represented_country.type);
-}
-
-test "GeoIP2 City" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP2-City-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geoip_city, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const got = (try db.query(geoip2.City, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    try expectEqual(2694762, got.value.city.geoname_id);
-    try expectEqualMaps(
-        got.value.city.names.?,
-        &.{ "de", "en", "fr", "ja", "zh-CN" },
-        &.{ "Linköping", "Linköping", "Linköping", "リンシェーピング", "林雪平" },
-    );
-
-    try expectEqualStrings("EU", got.value.continent.code);
-    try expectEqual(6255148, got.value.continent.geoname_id);
-    try expectEqualMaps(
-        got.value.continent.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Europa", "Europe", "Europa", "Europe", "ヨーロッパ", "Europa", "Европа", "欧洲" },
-    );
-
-    try expectEqual(2661886, got.value.country.geoname_id);
-    try expectEqual(true, got.value.country.is_in_european_union);
-    try expectEqualStrings("SE", got.value.country.iso_code);
-    try expectEqualMaps(
-        got.value.country.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Schweden", "Sweden", "Suecia", "Suède", "スウェーデン王国", "Suécia", "Швеция", "瑞典" },
-    );
-
-    try expectEqualDeep(
-        geoip2.City.Location{
-            .accuracy_radius = 76,
-            .latitude = 58.4167,
-            .longitude = 15.6167,
-            .time_zone = "Europe/Stockholm",
-        },
-        got.value.location,
-    );
-
-    try expectEqualDeep(geoip2.City.Postal{}, got.value.postal);
-
-    try expectEqual(2921044, got.value.registered_country.geoname_id);
-    try expectEqual(true, got.value.registered_country.is_in_european_union);
-    try expectEqualStrings("DE", got.value.registered_country.iso_code);
-    try expectEqualMaps(
-        got.value.registered_country.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Deutschland", "Germany", "Alemania", "Allemagne", "ドイツ連邦共和国", "Alemanha", "Германия", "德国" },
-    );
-
-    try expectEqualDeep(geoip2.Country.RepresentedCountry{}, got.value.represented_country);
-
-    try expectEqual(1, got.value.subdivisions.?.items.len);
-    const sub = got.value.subdivisions.?.items[0];
-    try expectEqual(2685867, sub.geoname_id);
-    try expectEqualStrings("E", sub.iso_code);
-    try expectEqualMaps(
-        sub.names.?,
-        &.{ "en", "fr" },
-        &.{ "Östergötland County", "Comté d'Östergötland" },
-    );
-
-    try expectEqualDeep(
-        geoip2.Country.Traits{
-            .is_anycast = false,
-        },
-        got.value.traits,
-    );
-
-    const ip2 = try std.Io.net.IpAddress.parse("214.1.1.0", 0);
-    const got2 = (try db.query(geoip2.City, allocator, ip2, .{})).?;
-    defer got2.deinit();
-
-    try expectEqual(true, got2.value.traits.is_anycast);
-}
-
-test "GeoIP2 Enterprise" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP2-Enterprise-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geoip_enterprise, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("74.209.24.0", 0);
-    const got = (try db.query(geoip2.Enterprise, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    try expectEqual(11, got.value.city.confidence);
-    try expectEqual(5112335, got.value.city.geoname_id);
-    try expectEqualMaps(
-        got.value.city.names.?,
-        &.{"en"},
-        &.{"Chatham"},
-    );
-
-    try expectEqualStrings("NA", got.value.continent.code);
-    try expectEqual(6255149, got.value.continent.geoname_id);
-    try expectEqualMaps(
-        got.value.continent.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "Nordamerika", "North America", "Norteamérica", "Amérique du Nord", "北アメリカ", "América do Norte", "Северная Америка", "北美洲" },
-    );
-
-    try expectEqual(99, got.value.country.confidence);
-    try expectEqual(6252001, got.value.country.geoname_id);
-    try expectEqual(false, got.value.country.is_in_european_union);
-    try expectEqualStrings("US", got.value.country.iso_code);
-    try expectEqualMaps(
-        got.value.country.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "USA", "United States", "Estados Unidos", "États-Unis", "アメリカ合衆国", "Estados Unidos", "США", "美国" },
-    );
-
-    try expectEqualDeep(
-        geoip2.Enterprise.Location{
-            .accuracy_radius = 27,
-            .latitude = 42.3478,
-            .longitude = -73.5549,
-            .time_zone = "America/New_York",
-        },
-        got.value.location,
-    );
-
-    try expectEqualDeep(
-        geoip2.Enterprise.Postal{
-            .code = "12037",
-            .confidence = 11,
-        },
-        got.value.postal,
-    );
-
-    try expectEqual(6252001, got.value.registered_country.geoname_id);
-    try expectEqual(false, got.value.registered_country.is_in_european_union);
-    try expectEqualStrings("US", got.value.registered_country.iso_code);
-    try expectEqualMaps(
-        got.value.registered_country.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "USA", "United States", "Estados Unidos", "États-Unis", "アメリカ合衆国", "Estados Unidos", "США", "美国" },
-    );
-
-    try expectEqualDeep(geoip2.Enterprise.RepresentedCountry{}, got.value.represented_country);
-
-    try expectEqual(1, got.value.subdivisions.?.items.len);
-    const sub = got.value.subdivisions.?.items[0];
-    try expectEqual(93, sub.confidence);
-    try expectEqual(5128638, sub.geoname_id);
-    try expectEqualStrings("NY", sub.iso_code);
-    try expectEqualMaps(
-        sub.names.?,
-        &.{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" },
-        &.{ "New York", "New York", "Nueva York", "New York", "ニューヨーク州", "Nova Iorque", "Нью-Йорк", "纽约州" },
-    );
-
-    try expectEqualDeep(
-        geoip2.Enterprise.Traits{
-            .autonomous_system_number = 14671,
-            .autonomous_system_organization = "FairPoint Communications",
-            .connection_type = "Cable/DSL",
-            .domain = "frpt.net",
-            .isp = "Fairpoint Communications",
-            .organization = "Fairpoint Communications",
-            .user_type = "residential",
-        },
-        got.value.traits,
-    );
-
-    const ip2 = try std.Io.net.IpAddress.parse("214.1.1.0", 0);
-    const got2 = (try db.query(geoip2.Enterprise, allocator, ip2, .{})).?;
-    defer got2.deinit();
-
-    try expectEqual(true, got2.value.traits.is_anycast);
-}
-
-test "GeoIP2 ISP" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP2-ISP-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geoip_isp, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("149.101.100.0", 0);
-    const got = (try db.query(geoip2.ISP, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    const want = geoip2.ISP{
-        .autonomous_system_number = 6167,
-        .autonomous_system_organization = "CELLCO-PART",
-        .isp = "Verizon Wireless",
-        .mobile_country_code = "310",
-        .mobile_network_code = "004",
-        .organization = "Verizon Wireless",
-    };
-    try expectEqualDeep(want, got.value);
-}
-
-test "GeoIP2 Connection-Type" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP2-Connection-Type-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geoip_connection_type, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("96.1.20.112", 0);
-    const got = (try db.query(geoip2.ConnectionType, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    const want = geoip2.ConnectionType{
-        .connection_type = "Cable/DSL",
-    };
-    try expectEqualDeep(want, got.value);
-}
-
-test "GeoIP2 Anonymous-IP" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geoip_anonymous_ip, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("81.2.69.0", 0);
-    const got = (try db.query(geoip2.AnonymousIP, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    const want = geoip2.AnonymousIP{
-        .is_anonymous = true,
-        .is_anonymous_vpn = true,
-        .is_hosting_provider = true,
-        .is_public_proxy = true,
-        .is_residential_proxy = true,
-        .is_tor_exit_node = true,
-    };
-    try expectEqualDeep(want, got.value);
-}
-
-test "GeoIP Anonymous-Plus" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP-Anonymous-Plus-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geoip_anonymous_plus, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("1.2.0.1", 0);
-    const got = (try db.query(geoip2.AnonymousPlus, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    const want = geoip2.AnonymousPlus{
-        .anonymizer_confidence = 30,
-        .is_anonymous = true,
-        .is_anonymous_vpn = true,
-        .network_last_seen = "2025-04-14",
-        .provider_name = "foo",
-    };
-    try expectEqualDeep(want, got.value);
-}
-
-test "GeoIP2 DensityIncome" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP2-DensityIncome-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geoip_densityincome, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("5.83.124.123", 0);
-    const got = (try db.query(geoip2.DensityIncome, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    const want = geoip2.DensityIncome{
-        .average_income = 32323,
-        .population_density = 1232,
-    };
-    try expectEqualDeep(want, got.value);
-}
-
-test "GeoIP2 Domain" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP2-Domain-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geoip_domain, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("66.92.80.123", 0);
-    const got = (try db.query(geoip2.Domain, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    const want = geoip2.Domain{
-        .domain = "speakeasy.net",
-    };
-    try expectEqualDeep(want, got.value);
-}
-
-test "GeoIP2 IP-Risk" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP2-IP-Risk-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geoip_ip_risk, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("6.1.2.1", 0);
-    const got = (try db.query(geoip2.IPRisk, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    const want = geoip2.IPRisk{
-        .anonymizer_confidence = 95,
-        .ip_risk = 75,
-        .is_anonymous = true,
-        .is_anonymous_vpn = true,
-        .network_last_seen = "2025-01-15",
-        .provider_name = "Test VPN Service",
-    };
-    try expectEqualDeep(want, got.value);
-
-    const ip2 = try std.Io.net.IpAddress.parse("214.2.3.5", 0);
-    const got2 = (try db.query(geoip2.IPRisk, allocator, ip2, .{})).?;
-    defer got2.deinit();
-
-    const want2 = geoip2.IPRisk{
-        .ip_risk = 90,
-        .is_anonymous = true,
-        .is_anonymous_vpn = true,
-        .is_residential_proxy = true,
-        .is_tor_exit_node = true,
-    };
-    try expectEqualDeep(want2, got2.value);
-}
-
-test "GeoIP2 Static-IP-Score" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP2-Static-IP-Score-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geoip_static_ip_score, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("1.2.3.4", 0);
-    const got = (try db.query(geoip2.StaticIPScore, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    const want = geoip2.StaticIPScore{
-        .score = 0.05,
-    };
-    try expectEqualDeep(want, got.value);
-}
-
-test "GeoIP2 User-Count" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoIP2-User-Count-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    try expectEqual(DatabaseType.geoip_user_count, DatabaseType.new(db.metadata.database_type));
-
-    const ip = try std.Io.net.IpAddress.parse("1.2.3.4", 0);
-    const got = (try db.query(geoip2.UserCount, allocator, ip, .{})).?;
-    defer got.deinit();
-
-    const want = geoip2.UserCount{
-        .ipv4_24 = 4,
-        .ipv4_32 = 3,
-    };
-    try expectEqualDeep(want, got.value);
 }
 
 test "query with field name filtering" {
@@ -1616,115 +1031,6 @@ test "scan skips empty records" {
         }
         try expectEqual(12, n);
     }
-}
-
-test "cache hit returns same value" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoLite2-City-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    var cache = try Cache(geolite2.City).init(allocator, .{ .size = 4 });
-    defer cache.deinit();
-
-    const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const result = (try db.lookup(ip, .{})).?;
-
-    // Cache miss, decodes.
-    const v1 = try cache.decode(&db, result, .{});
-    try expectEqualStrings("SE", v1.country.iso_code);
-
-    // Cache hit, same pointer.
-    const v2 = try cache.decode(&db, result, .{});
-    try expectEqualStrings("SE", v2.country.iso_code);
-
-    const v3 = cache.get(result.pointer).?;
-    try expectEqualStrings("SE", v3.country.iso_code);
-}
-
-test "cache eviction" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoLite2-City-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    // Size 1: every new result evicts the previous one.
-    var cache = try Cache(geolite2.City).init(allocator, .{ .size = 1 });
-    defer cache.deinit();
-
-    const ip1 = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const result1 = (try db.lookup(ip1, .{})).?;
-    _ = try cache.decode(&db, result1, .{});
-    try expect(cache.get(result1.pointer) != null);
-
-    const ip2 = try std.Io.net.IpAddress.parse("2001:218::", 0);
-    const result2 = (try db.lookup(ip2, .{})).?;
-    _ = try cache.decode(&db, result2, .{});
-
-    // result1 is evicted.
-    try expect(cache.get(result1.pointer) == null);
-    try expect(cache.get(result2.pointer) != null);
-}
-
-test "cache ring buffer wrap-around" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoLite2-City-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    var cache = try Cache(geolite2.City).init(allocator, .{ .size = 2 });
-    defer cache.deinit();
-
-    const ip1 = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const ip2 = try std.Io.net.IpAddress.parse("2001:218::", 0);
-    const ip3 = try std.Io.net.IpAddress.parse("216.160.83.56", 0);
-
-    const result1 = (try db.lookup(ip1, .{})).?;
-    const result2 = (try db.lookup(ip2, .{})).?;
-    const result3 = (try db.lookup(ip3, .{})).?;
-
-    _ = try cache.decode(&db, result1, .{});
-    _ = try cache.decode(&db, result2, .{});
-    // Cache is full now, so the next insert evicts result1.
-    _ = try cache.decode(&db, result3, .{});
-
-    try expect(cache.get(result1.pointer) == null);
-    try expect(cache.get(result2.pointer) != null);
-    try expect(cache.get(result3.pointer) != null);
-}
-
-test "cache decode with field filtering" {
-    var db = try Reader.mmap(
-        allocator,
-        io,
-        "test-data/test-data/GeoLite2-City-Test.mmdb",
-        .{},
-    );
-    defer db.close();
-
-    var cache = try Cache(geolite2.City).init(allocator, .{ .size = 4 });
-    defer cache.deinit();
-
-    const ip = try std.Io.net.IpAddress.parse("89.160.20.128", 0);
-    const result = (try db.lookup(ip, .{})).?;
-
-    const v = try cache.decode(&db, result, .{ .only = &.{"city"} });
-    try expectEqualStrings("Linköping", v.city.names.?.get("en").?);
-    // Country was not decoded.
-    try expectEqualStrings("", v.country.iso_code);
-}
-
-test "cache rejects size 0" {
-    try expectError(error.InvalidCacheSize, Cache(geolite2.City).init(allocator, .{ .size = 0 }));
 }
 
 test "getPath with an empty path returns a map at the record root" {

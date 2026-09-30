@@ -3,7 +3,8 @@ const std = @import("std");
 const decoder = @import("decoder.zig");
 const filter = @import("filter.zig");
 
-pub const DecodeError = error{
+/// A record does not match the Zig type it is decoded into.
+pub const SchemaError = error{
     ExpectedStructType,
     ExpectedMap,
     ExpectedArray,
@@ -15,7 +16,11 @@ pub const DecodeError = error{
     ExpectedUint64,
     ExpectedUint128,
     ExpectedBool,
+    ExpectedStringOrBytes,
+    UnsupportedType,
 };
+
+const DecodeError = decoder.Decoder.Error || SchemaError || std.mem.Allocator.Error;
 
 /// Decodes a typed record such as geolite2.City at the decoder's current offset.
 ///
@@ -28,7 +33,7 @@ pub fn decode(
     allocator: std.mem.Allocator,
     T: type,
     field_names: ?[]const []const u8,
-) !T {
+) DecodeError!T {
     if (field_names != null and field_names.?.len == 0) {
         return .{};
     }
@@ -45,7 +50,7 @@ fn decodeStruct(
     field_names: ?[]const []const u8,
 ) !T {
     if (data_field.type != .Map) {
-        return DecodeError.ExpectedStructType;
+        return error.ExpectedStructType;
     }
 
     // Note, all the record's fields must be defined, i.e., .{ .some_field = undefined }
@@ -106,15 +111,15 @@ fn decodeValue(d: *decoder.Decoder, allocator: std.mem.Allocator, T: type) !T {
         []const u8, ?[]const u8 => if (field.type == .String or field.type == .Bytes)
             try d.decodeBytes(field.size)
         else
-            decoder.DecodeError.ExpectedStringOrBytes,
-        f64, ?f64 => if (field.type == .Double) try d.decodeDouble(field.size) else DecodeError.ExpectedDouble,
-        u16, ?u16 => if (field.type == .Uint16) try d.decodeInteger(u16, field.size) else DecodeError.ExpectedUint16,
-        u32, ?u32 => if (field.type == .Uint32) try d.decodeInteger(u32, field.size) else DecodeError.ExpectedUint32,
-        i32, ?i32 => if (field.type == .Int32) try d.decodeInteger(i32, field.size) else DecodeError.ExpectedInt32,
-        u64, ?u64 => if (field.type == .Uint64) try d.decodeInteger(u64, field.size) else DecodeError.ExpectedUint64,
-        u128, ?u128 => if (field.type == .Uint128) try d.decodeInteger(u128, field.size) else DecodeError.ExpectedUint128,
-        bool, ?bool => if (field.type == .Bool) try d.decodeBool(field.size) else DecodeError.ExpectedBool,
-        f32, ?f32 => if (field.type == .Float) try d.decodeFloat(field.size) else DecodeError.ExpectedFloat,
+            error.ExpectedStringOrBytes,
+        f64, ?f64 => if (field.type == .Double) try d.decodeDouble(field.size) else error.ExpectedDouble,
+        u16, ?u16 => if (field.type == .Uint16) try d.decodeInteger(u16, field.size) else error.ExpectedUint16,
+        u32, ?u32 => if (field.type == .Uint32) try d.decodeInteger(u32, field.size) else error.ExpectedUint32,
+        i32, ?i32 => if (field.type == .Int32) try d.decodeInteger(i32, field.size) else error.ExpectedInt32,
+        u64, ?u64 => if (field.type == .Uint64) try d.decodeInteger(u64, field.size) else error.ExpectedUint64,
+        u128, ?u128 => if (field.type == .Uint128) try d.decodeInteger(u128, field.size) else error.ExpectedUint128,
+        bool, ?bool => if (field.type == .Bool) try d.decodeBool(field.size) else error.ExpectedBool,
+        f32, ?f32 => if (field.type == .Float) try d.decodeFloat(field.size) else error.ExpectedFloat,
         else => {
             // We support Structs or Optional Structs only to safely decode arrays and maps.
             comptime var DecodedType: type = T;
@@ -124,16 +129,16 @@ fn decodeValue(d: *decoder.Decoder, allocator: std.mem.Allocator, T: type) !T {
                     DecodedType = opt.child;
                     switch (@typeInfo(DecodedType)) {
                         .@"struct" => {},
-                        else => return decoder.DecodeError.UnsupportedFieldType,
+                        else => return error.UnsupportedType,
                     }
                 },
-                else => return decoder.DecodeError.UnsupportedFieldType,
+                else => return error.UnsupportedType,
             }
 
             // Decode Map into a []Entry slice, e.g., collection.Map.
             if (@hasDecl(DecodedType, "map_marker")) {
                 if (field.type != .Map) {
-                    return DecodeError.ExpectedMap;
+                    return error.ExpectedMap;
                 }
 
                 try d.boundMap(field.size);
@@ -154,7 +159,7 @@ fn decodeValue(d: *decoder.Decoder, allocator: std.mem.Allocator, T: type) !T {
             // Decode Array into a slice, e.g., collection.Array.
             if (@hasDecl(DecodedType, "array_marker")) {
                 if (field.type != .Array) {
-                    return DecodeError.ExpectedArray;
+                    return error.ExpectedArray;
                 }
 
                 try d.boundArray(field.size);

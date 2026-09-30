@@ -13,7 +13,7 @@ pub fn decode(
     d: *decoder.Decoder,
     allocator: std.mem.Allocator,
     field_names: ?[]const []const u8,
-) !Value {
+) (decoder.Decoder.Error || std.mem.Allocator.Error)!Value {
     if (field_names != null and field_names.?.len == 0) {
         return .{ .map = &.{} };
     }
@@ -87,7 +87,7 @@ fn decodeAny(
 
             return .{ .map = entries[0..n] };
         },
-        else => decoder.DecodeError.UnsupportedFieldType,
+        else => error.UnknownFieldType,
     };
 }
 
@@ -144,7 +144,7 @@ pub const Value = union(enum) {
     }
 
     /// Formats the Value as JSON using a writer.
-    pub fn format(self: Value, writer: anytype) !void {
+    pub fn format(self: Value, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (self) {
             .none => try writer.writeAll("null"),
             .string => |s| {

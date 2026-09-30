@@ -7,7 +7,10 @@ pub fn Fields(comptime capacity: usize) type {
         buf: ?[]u8 = null,
 
         const Self = @This();
-        pub const Error = error{TooManyFields};
+
+        pub const Error = error{
+            TooManyFields,
+        };
 
         /// Parses a string into field names.
         pub fn parse(str: []const u8, sep: u8) Error!Self {
@@ -24,7 +27,11 @@ pub fn Fields(comptime capacity: usize) type {
         /// Parses a string, copying bytes into a heap-allocated buffer.
         /// Use this when the Fields must outlive the input string.
         /// Call deinit() to free the buffer.
-        pub fn parseAlloc(allocator: std.mem.Allocator, str: []const u8, sep: u8) !Self {
+        pub fn parseAlloc(
+            allocator: std.mem.Allocator,
+            str: []const u8,
+            sep: u8,
+        ) (Error || std.mem.Allocator.Error)!Self {
             const buf = try allocator.dupe(u8, str);
             errdefer allocator.free(buf);
 

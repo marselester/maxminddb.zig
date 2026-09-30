@@ -54,7 +54,7 @@ pub const Value = union(enum) {
                     .strict = d.strict,
                 },
             },
-            else => return decoder.DecodeError.UnsupportedFieldType,
+            else => return error.UnknownFieldType,
         };
 
         return v;
@@ -70,7 +70,7 @@ pub const Map = struct {
 
     /// Returns the value for the key or null if the key is absent.
     /// Deliberately no indexed iteration on the lazy side because enumeration is slow.
-    pub fn get(self: Map, key: []const u8) !?Value {
+    pub fn get(self: Map, key: []const u8) decoder.Decoder.Error!?Value {
         var d = decoder.Decoder{
             .src = self.src,
             .offset = self.payload_offset,
@@ -92,7 +92,7 @@ pub const Array = struct {
     strict: bool = true,
 
     /// Returns the i-th item or null if i is out of bounds.
-    pub fn at(self: Array, i: usize) !?Value {
+    pub fn at(self: Array, i: usize) decoder.Decoder.Error!?Value {
         var d = decoder.Decoder{
             .src = self.src,
             .offset = self.payload_offset,
@@ -109,7 +109,7 @@ pub const Array = struct {
 /// Walks a path from the decoder's position.
 /// Each step is a map key or an array index ("-1" is the last element).
 /// Returns null if any step does not resolve.
-pub fn walkPath(d: *decoder.Decoder, path: []const []const u8) !?Value {
+pub fn walkPath(d: *decoder.Decoder, path: []const []const u8) decoder.Decoder.Error!?Value {
     for (path) |step| {
         // Descend into the container at the current position (walking moves forward only).
         const field = try d.resolveField();

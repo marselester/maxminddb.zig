@@ -7,20 +7,6 @@ const typed = @import("typed.zig");
 const any = @import("any.zig");
 const lazy = @import("lazy.zig");
 
-pub const ReadError = error{
-    MetadataStartNotFound,
-    InvalidTreeNode,
-    CorruptedTree,
-    UnknownRecordSize,
-    UnknownIPVersion,
-    UnsupportedBinaryFormat,
-    EmptyDatabase,
-    InvalidPrefixLen,
-    InvalidIndexBits,
-    IndexAlreadyBuilt,
-    IPv6AddressInIPv4Database,
-};
-
 /// Metadata holds the metadata decoded from the MaxMind DB file.
 /// In particular it has the format version, the build time as Unix epoch time,
 /// the database type and description, the IP version supported,
@@ -42,29 +28,42 @@ pub const Metadata = struct {
 
     /// Decodes database metadata which is stored as a separate data section,
     /// see https://maxmind.github.io/MaxMind-DB/#database-metadata.
-    pub fn decode(allocator: std.mem.Allocator, src: []const u8) !Metadata {
-        return decodeAs(Metadata, allocator, src);
+    fn decode(allocator: std.mem.Allocator, src: []const u8) !Metadata {
+        var d = try sectionDecoder(src);
+        const metadata = typed.decode(&d, allocator, Metadata, null) catch |e| {
+            switch (e) {
+                error.ExpectedStructType,
+                error.ExpectedMap,
+                error.ExpectedArray,
+                error.ExpectedDouble,
+                error.ExpectedFloat,
+                error.ExpectedUint16,
+                error.ExpectedUint32,
+                error.ExpectedInt32,
+                error.ExpectedUint64,
+                error.ExpectedUint128,
+                error.ExpectedBool,
+                error.ExpectedStringOrBytes,
+                error.UnsupportedType,
+                => return error.InvalidMetadata,
+                else => |other| return other,
+            }
+        };
+
+        return metadata;
     }
 
-    /// Decodes metadata into an arbitrary type, e.g., any.Value.
-    pub fn decodeAs(T: type, allocator: std.mem.Allocator, src: []const u8) !T {
-        const metadata_start = try findMetadataStart(src);
-
-        var d = decoder.Decoder{
+    fn sectionDecoder(src: []const u8) !decoder.Decoder {
+        const metadata_start = try findStart(src);
+        return .{
             .src = src[metadata_start..],
             .offset = 0,
         };
-
-        if (comptime T == any.Value) {
-            return try any.decode(&d, allocator, null);
-        }
-
-        return try typed.decode(&d, allocator, T, null);
     }
 
-    fn findMetadataStart(src: []const u8) !usize {
+    fn findStart(src: []const u8) !usize {
         var metadata_start = std.mem.findLast(u8, src, start_marker) orelse {
-            return ReadError.MetadataStartNotFound;
+            return error.MetadataStartNotFound;
         };
         metadata_start += start_marker.len;
 
@@ -104,6 +103,56 @@ pub const Reader = struct {
         io: std.Io,
     },
     arena: *std.heap.ArenaAllocator,
+
+    /// The file is empty, lacks metadata or a search tree,
+    /// has a metadata field of the wrong type, or uses an unsupported format.
+    pub const InvalidDatabaseError = error{
+        EmptyFile,
+        MetadataStartNotFound,
+        InvalidMetadata,
+        UnsupportedBinaryFormat,
+        EmptyDatabase,
+        UnknownRecordSize,
+        UnknownIPVersion,
+    };
+
+    /// The metadata, the search tree, or the data section does not decode,
+    /// or a decode limit was hit.
+    pub const CorruptDataError = error{
+        CorruptedTree,
+        InvalidTreeNode,
+    } || decoder.Decoder.Error;
+
+    /// The address or network cannot be looked up in this database.
+    pub const AddressError = error{
+        IPv6AddressInIPv4Database,
+        InvalidPrefixLen,
+    };
+
+    /// An option is out of range.
+    pub const OptionsError = error{
+        InvalidIndexBits,
+    };
+
+    pub const OpenBytesError = InvalidDatabaseError ||
+        CorruptDataError ||
+        OptionsError ||
+        std.mem.Allocator.Error;
+    pub const OpenError = OpenBytesError || FileSystemError;
+    pub const LookupError = CorruptDataError || AddressError;
+    pub const DecodeError = CorruptDataError ||
+        typed.SchemaError ||
+        std.mem.Allocator.Error;
+    pub const QueryError = LookupError || DecodeError;
+    pub const DecodeMetadataError = InvalidDatabaseError ||
+        CorruptDataError ||
+        std.mem.Allocator.Error;
+
+    /// The database file cannot be opened, read, or mapped.
+    const FileSystemError = std.Io.File.OpenError ||
+        std.Io.File.StatError ||
+        std.Io.File.MemoryMap.CreateError ||
+        std.Io.Dir.ReadFileAllocError;
 
     pub const Options = struct {
         /// Builds an index of the first N bits of IPv4 addresses to speed up lookups,
@@ -185,38 +234,42 @@ pub const Reader = struct {
         src: []const u8,
         options: Options,
     ) !Reader {
+        if (src.len == 0) {
+            return error.EmptyFile;
+        }
+
         const metadata = try Metadata.decode(arena.allocator(), src);
 
         if (metadata.binary_format_major_version != 2) {
-            return ReadError.UnsupportedBinaryFormat;
+            return error.UnsupportedBinaryFormat;
         }
 
         if (metadata.node_count == 0) {
-            return ReadError.EmptyDatabase;
+            return error.EmptyDatabase;
         }
 
         switch (metadata.record_size) {
             24, 28, 32 => {},
-            else => return ReadError.UnknownRecordSize,
+            else => return error.UnknownRecordSize,
         }
 
         switch (metadata.ip_version) {
             4, 6 => {},
-            else => return ReadError.UnknownIPVersion,
+            else => return error.UnknownIPVersion,
         }
 
         const search_tree_size = std.math.mul(
             usize,
             metadata.node_count,
             metadata.record_size / 4,
-        ) catch return ReadError.CorruptedTree;
+        ) catch return error.CorruptedTree;
         const data_offset = std.math.add(
             usize,
             search_tree_size,
             data_section_separator_size,
-        ) catch return ReadError.CorruptedTree;
+        ) catch return error.CorruptedTree;
         if (data_offset > src.len) {
-            return ReadError.CorruptedTree;
+            return error.CorruptedTree;
         }
 
         var r = Reader{
@@ -242,11 +295,11 @@ pub const Reader = struct {
     }
 
     /// Constructs a reader from a byte slice.
-    pub fn fromBytes(
+    pub fn openBytes(
         allocator: std.mem.Allocator,
         src: []const u8,
         options: Options,
-    ) !Reader {
+    ) OpenBytesError!Reader {
         const arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer {
             arena.deinit();
@@ -263,7 +316,7 @@ pub const Reader = struct {
         io: std.Io,
         path: []const u8,
         options: Options,
-    ) !Reader {
+    ) OpenError!Reader {
         const arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer {
             arena.deinit();
@@ -287,13 +340,20 @@ pub const Reader = struct {
         io: std.Io,
         path: []const u8,
         options: Options,
-    ) !Reader {
+    ) OpenError!Reader {
         var f = try std.Io.Dir.cwd().openFile(io, path, .{});
         defer f.close(io);
 
-        const file_size: usize = @intCast(try f.length(io));
+        const stat = try f.stat(io);
+        if (stat.kind == .directory) {
+            return error.IsDir;
+        }
+
+        const file_size = std.math.cast(usize, stat.size) orelse {
+            return error.FileTooBig;
+        };
         if (file_size == 0) {
-            return error.FileEmpty;
+            return error.EmptyFile;
         }
 
         var map = try f.createMemoryMap(
@@ -341,7 +401,7 @@ pub const Reader = struct {
         allocator: std.mem.Allocator,
         address: std.Io.net.IpAddress,
         options: QueryOptions,
-    ) !?Decoded(T) {
+    ) QueryError!?Decoded(T) {
         const result = try self.lookup(
             address,
             .{ .include_empty_values = options.include_empty_values },
@@ -354,10 +414,14 @@ pub const Reader = struct {
     /// Returns null if the IP address is not found or the record is empty.
     /// Empty records are skipped by default.
     /// Use include_empty_values = true to return them.
-    pub fn lookup(self: *const Reader, address: std.Io.net.IpAddress, options: ResultOptions) !?Result {
+    pub fn lookup(
+        self: *const Reader,
+        address: std.Io.net.IpAddress,
+        options: ResultOptions,
+    ) LookupError!?Result {
         const ip = net.IP.from(address);
         if (ip.bitCount() == 128 and self.metadata.ip_version == 4) {
-            return ReadError.IPv6AddressInIPv4Database;
+            return error.IPv6AddressInIPv4Database;
         }
 
         var pointer: DataPointer = .none;
@@ -391,7 +455,7 @@ pub const Reader = struct {
         allocator: std.mem.Allocator,
         result: Result,
         options: DecodeOptions,
-    ) !Decoded(T) {
+    ) DecodeError!Decoded(T) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
 
@@ -416,7 +480,7 @@ pub const Reader = struct {
         allocator: std.mem.Allocator,
         result: Result,
         options: DecodeOptions,
-    ) !T {
+    ) DecodeError!T {
         return try self.resolveDataPointerAndDecode(
             allocator,
             T,
@@ -435,7 +499,7 @@ pub const Reader = struct {
         allocator: std.mem.Allocator,
         range: ?net.Network,
         options: QueryOptions,
-    ) !DecodedIterator(T) {
+    ) AddressError!DecodedIterator(T) {
         return .{
             .it = try self.networks(
                 range,
@@ -452,17 +516,21 @@ pub const Reader = struct {
     ///
     /// Empty records are skipped by default.
     /// Use include_empty_values = true to yield them.
-    pub fn networks(self: *const Reader, range: ?net.Network, options: ResultOptions) !NetworkIterator {
+    pub fn networks(
+        self: *const Reader,
+        range: ?net.Network,
+        options: ResultOptions,
+    ) AddressError!NetworkIterator {
         const network = range orelse self.fullRange();
         const prefix_len: usize = network.prefix_len;
         const ip = net.IP.from(network.ip);
         const bit_count: usize = ip.bitCount();
 
         if (prefix_len > bit_count) {
-            return ReadError.InvalidPrefixLen;
+            return error.InvalidPrefixLen;
         }
         if (bit_count == 128 and self.metadata.ip_version == 4) {
-            return ReadError.IPv6AddressInIPv4Database;
+            return error.IPv6AddressInIPv4Database;
         }
 
         var node = self.startNode(bit_count);
@@ -509,11 +577,20 @@ pub const Reader = struct {
         self: *const Reader,
         result: Result,
         path: []const []const u8,
-    ) !?lazy.Value {
+    ) CorruptDataError!?lazy.Value {
         const record_offset = try self.resolveDataPointer(result.pointer);
         var d = self.recordDecoder(record_offset);
 
         return try lazy.walkPath(&d, path);
+    }
+
+    /// Decodes every metadata key into an any.Value, including keys Metadata does not have.
+    pub fn decodeMetadata(
+        self: *const Reader,
+        allocator: std.mem.Allocator,
+    ) DecodeMetadataError!any.Value {
+        var d = try Metadata.sectionDecoder(self.src);
+        return any.decode(&d, allocator, null);
     }
 
     /// The range covering every network in the database.
@@ -523,11 +600,9 @@ pub const Reader = struct {
 
     fn buildIPv4Index(self: *Reader) !void {
         if (self.ipv4_index_first_n_bits > 24) {
-            return ReadError.InvalidIndexBits;
+            return error.InvalidIndexBits;
         }
-        if (self.ipv4_index != null) {
-            return ReadError.IndexAlreadyBuilt;
-        }
+        std.debug.assert(self.ipv4_index == null);
 
         const index_size = std.math.shl(usize, 1, self.ipv4_index_first_n_bits);
         self.ipv4_index = try self.arena.allocator().alloc(u32, index_size);
@@ -603,12 +678,12 @@ pub const Reader = struct {
         const raw = @intFromEnum(pointer);
         const min_pointer = self.metadata.node_count + data_section_separator_size;
         if (raw < min_pointer) {
-            return ReadError.CorruptedTree;
+            return error.CorruptedTree;
         }
 
         const resolved: usize = raw - min_pointer;
         if (self.data_start > self.src.len or resolved >= self.src.len - self.data_start) {
-            return ReadError.CorruptedTree;
+            return error.CorruptedTree;
         }
 
         return resolved;
@@ -682,7 +757,7 @@ pub const Reader = struct {
             return .{ @enumFromInt(node), prefix_len };
         }
 
-        return ReadError.InvalidTreeNode;
+        return error.InvalidTreeNode;
     }
 
     fn startNode(self: *const Reader, length: usize) usize {
@@ -736,116 +811,6 @@ pub const Reader = struct {
     }
 };
 
-/// Ring buffer cache of recently decoded records.
-/// The cache owns the memory that backs decoded values,
-/// so each value is valid until its slot is evicted.
-///
-/// The default size of 16 is good for most databases.
-/// Country databases benefit from larger sizes, e.g., 64 or larger.
-pub fn Cache(comptime T: type) type {
-    return struct {
-        slots: []Slot,
-        // Number of slots in use.
-        filled: usize = 0,
-        // Index in the slots array where the next record will be written.
-        write_pos: usize = 0,
-        allocator: std.mem.Allocator,
-
-        const Self = @This();
-
-        pub const Options = struct {
-            size: usize = 16,
-        };
-
-        const Slot = struct {
-            pointer: Reader.DataPointer,
-            value: T,
-            arena: std.heap.ArenaAllocator,
-        };
-
-        pub fn init(allocator: std.mem.Allocator, options: Self.Options) !Self {
-            if (options.size == 0) {
-                return error.InvalidCacheSize;
-            }
-
-            return .{
-                .slots = try allocator.alloc(Slot, options.size),
-                .allocator = allocator,
-            };
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.reset();
-            self.allocator.free(self.slots);
-        }
-
-        /// Drops every cached record, freeing arenas, and leaves the cache
-        /// ready to refill at the same capacity.
-        /// Use when the decode filter changes and cached trees are stale.
-        pub fn reset(self: *Self) void {
-            for (self.slots[0..self.filled]) |*slot| {
-                slot.arena.deinit();
-            }
-
-            self.filled = 0;
-            self.write_pos = 0;
-        }
-
-        /// Returns a cached value for the given data pointer, or null on cache miss.
-        pub fn get(self: *Self, pointer: Reader.DataPointer) ?T {
-            for (self.slots[0..self.filled]) |*slot| {
-                if (slot.pointer == pointer) {
-                    return slot.value;
-                }
-            }
-
-            return null;
-        }
-
-        /// Decodes a record, using the cache to avoid redundant decoding.
-        /// Returns the cached value on hit, or decodes and caches on miss.
-        /// The cache owns the decoded memory.
-        /// The returned value is valid until its slot is evicted or cache.deinit() is called.
-        pub fn decode(
-            self: *Self,
-            db: *const Reader,
-            result: Reader.Result,
-            options: Reader.DecodeOptions,
-        ) !T {
-            if (self.get(result.pointer)) |v| {
-                return v;
-            }
-
-            var arena = std.heap.ArenaAllocator.init(self.allocator);
-            errdefer arena.deinit();
-
-            const value = try db.decodeUnmanaged(T, arena.allocator(), result, options);
-
-            self.insert(.{
-                .pointer = result.pointer,
-                .value = value,
-                .arena = arena,
-            });
-
-            return value;
-        }
-
-        fn insert(self: *Self, slot: Slot) void {
-            if (self.filled < self.slots.len) {
-                self.slots[self.filled] = slot;
-                self.filled += 1;
-
-                return;
-            }
-
-            // Evict the oldest record and take its slot.
-            self.slots[self.write_pos].arena.deinit();
-            self.slots[self.write_pos] = slot;
-            self.write_pos = (self.write_pos + 1) % self.slots.len;
-        }
-    };
-}
-
 pub fn DecodedIterator(T: type) type {
     return struct {
         it: NetworkIterator,
@@ -855,7 +820,7 @@ pub fn DecodedIterator(T: type) type {
         /// Returns the next network and its value.
         ///
         /// The returned result owns an arena, so you should call deinit() to free it.
-        pub fn next(self: *@This()) !?Reader.Decoded(T) {
+        pub fn next(self: *@This()) Reader.DecodeError!?Reader.Decoded(T) {
             const result = try self.it.next() orelse return null;
 
             var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -899,7 +864,7 @@ pub const NetworkIterator = struct {
     };
 
     /// Returns the next result (pointer + network) or null when exhausted.
-    pub fn next(self: *Self) !?Reader.Result {
+    pub fn next(self: *Self) Reader.CorruptDataError!?Reader.Result {
         while (self.pop()) |current| {
             const reader = self.reader;
             const bit_count = current.ip_bytes.bitCount();
@@ -928,7 +893,7 @@ pub const NetworkIterator = struct {
                 // A valid tree resolves within bit_count levels.
                 // A deeper internal node is cyclic or malformed.
                 if (current.prefix_len >= bit_count) {
-                    return ReadError.CorruptedTree;
+                    return error.InvalidTreeNode;
                 }
 
                 // In order traversal of the children on the right (1-bit).
