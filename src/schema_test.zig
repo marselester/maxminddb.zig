@@ -678,3 +678,104 @@ test "GeoIP2 User-Count" {
     };
     try expectEqualDeep(want, got.value);
 }
+
+test "GeoIP Regions" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/GeoIP-Regions-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    try expectEqual(DatabaseType.geoip_regions, DatabaseType.new(db.metadata.database_type));
+    try expectEqual(geoip2.Regions, DatabaseType.geoip_regions.recordType());
+
+    const ip = try std.Io.net.IpAddress.parse("214.78.120.1", 0);
+    const got = (try db.query(geoip2.Regions, allocator, ip, .{})).?;
+    defer got.deinit();
+
+    try expectEqualDeep(
+        geoip2.Regions.Country{
+            .confidence = 60,
+            .geoname_id = 6252001,
+            .iso_code = "US",
+        },
+        got.value.country,
+    );
+    try expectEqualDeep(
+        geoip2.City.Location{
+            .accuracy_radius = 200,
+            .latitude = 32.7405,
+            .longitude = -117.0935,
+            .time_zone = "America/Los_Angeles",
+        },
+        got.value.location,
+    );
+    try expectEqualDeep(
+        &[_]geoip2.Regions.Subdivision{
+            .{
+                .confidence = 25,
+                .geoname_id = 5332921,
+                .iso_code = "CA",
+            },
+        },
+        got.value.subdivisions.?.items,
+    );
+
+    const alternates = got.value.alternate_locations.?.items;
+    try expectEqual(18, alternates.len);
+    try expectEqualDeep(
+        geoip2.Regions.AlternateLocation{
+            .country = .{
+                .confidence = 60,
+                .geoname_id = 6252001,
+                .iso_code = "US",
+            },
+            .subdivisions = .{
+                .items = &.{
+                    .{
+                        .confidence = 41,
+                        .geoname_id = 5128638,
+                        .iso_code = "NY",
+                    },
+                },
+            },
+        },
+        alternates[0],
+    );
+    try expectEqualDeep(
+        geoip2.Regions.AlternateLocation{
+            .country = .{
+                .confidence = 3,
+                .geoname_id = 3017382,
+                .iso_code = "FR",
+            },
+        },
+        alternates[17],
+    );
+}
+
+test "GeoIP Residential-Proxy" {
+    var db = try Reader.mmap(
+        allocator,
+        io,
+        "test-data/test-data/GeoIP-Residential-Proxy-Test.mmdb",
+        .{},
+    );
+    defer db.close();
+
+    try expectEqual(DatabaseType.geoip_residential_proxy, DatabaseType.new(db.metadata.database_type));
+    try expectEqual(geoip2.ResidentialProxy, DatabaseType.geoip_residential_proxy.recordType());
+
+    const ip = try std.Io.net.IpAddress.parse("1.2.0.4", 0);
+    const got = (try db.query(geoip2.ResidentialProxy, allocator, ip, .{})).?;
+    defer got.deinit();
+
+    const want = geoip2.ResidentialProxy{
+        .anonymizer_confidence = 82,
+        .network_last_seen = "2026-05-11",
+        .provider_name = "quickshift",
+    };
+    try expectEqualDeep(want, got.value);
+}

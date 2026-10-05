@@ -42,6 +42,8 @@ pub const DatabaseType = enum {
     geoip_domain,
     geoip_static_ip_score,
     geoip_user_count,
+    geoip_regions,
+    geoip_residential_proxy,
 
     pub fn new(database_type: []const u8) ?DatabaseType {
         var db_type_snake: [64]u8 = undefined;
@@ -99,6 +101,8 @@ pub const DatabaseType = enum {
             .geoip_domain => geoip2.Domain,
             .geoip_static_ip_score => geoip2.StaticIPScore,
             .geoip_user_count => geoip2.UserCount,
+            .geoip_regions => geoip2.Regions,
+            .geoip_residential_proxy => geoip2.ResidentialProxy,
         };
     }
 };

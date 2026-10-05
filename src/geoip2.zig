@@ -243,3 +243,40 @@ pub const UserCount = struct {
     ipv6_48: u32 = 0,
     ipv6_64: u32 = 0,
 };
+
+/// Regions represents a record in the GeoIP-Regions database, for example,
+/// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoIP-Regions-Test.json.
+/// It gives the country and subdivisions of an IP address with confidence scores,
+/// and the alternate locations the address may belong to.
+pub const Regions = struct {
+    alternate_locations: ?collection.Array(Self.AlternateLocation) = null,
+    country: Self.Country = .{},
+    location: City.Location = .{},
+    subdivisions: ?collection.Array(Self.Subdivision) = null,
+
+    const Self = @This();
+    pub const AlternateLocation = struct {
+        country: Self.Country = .{},
+        subdivisions: ?collection.Array(Self.Subdivision) = null,
+    };
+    pub const Country = struct {
+        confidence: u16 = 0,
+        geoname_id: u32 = 0,
+        iso_code: []const u8 = "",
+    };
+    pub const Subdivision = struct {
+        confidence: u16 = 0,
+        geoname_id: u32 = 0,
+        iso_code: []const u8 = "",
+    };
+};
+
+/// ResidentialProxy represents a record in the GeoIP-Residential-Proxy database, for example,
+/// https://github.com/maxmind/MaxMind-DB/blob/main/source-data/GeoIP-Residential-Proxy-Test.json.
+/// It identifies residential proxy networks, with the provider, a confidence score,
+/// and the date the network was last seen.
+pub const ResidentialProxy = struct {
+    anonymizer_confidence: u16 = 0,
+    network_last_seen: []const u8 = "",
+    provider_name: []const u8 = "",
+};
