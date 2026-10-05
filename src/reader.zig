@@ -675,7 +675,7 @@ pub const Reader = struct {
     }
 
     fn resolveDataPointer(self: *const Reader, pointer: DataPointer) !usize {
-        const raw = @intFromEnum(pointer);
+        const raw = @backingInt(pointer);
         const min_pointer = self.metadata.node_count + data_section_separator_size;
         if (raw < min_pointer) {
             return error.CorruptedTree;
@@ -722,7 +722,7 @@ pub const Reader = struct {
             if (node == self.metadata.node_count) {
                 return .{ .none, prefix_len };
             }
-            return .{ @enumFromInt(node), prefix_len };
+            return .{ @fromBackingInt(node), prefix_len };
         }
 
         // Continue traversal from where the index ends (bit N of IPv4 portion).
@@ -754,7 +754,7 @@ pub const Reader = struct {
         }
 
         if (node > node_count) {
-            return .{ @enumFromInt(node), prefix_len };
+            return .{ @fromBackingInt(node), prefix_len };
         }
 
         return error.InvalidTreeNode;
@@ -880,7 +880,7 @@ pub const NetworkIterator = struct {
 
             // Data pointer (> node_count) means this node holds a record.
             if (current.node > self.node_count) {
-                const pointer: Reader.DataPointer = @enumFromInt(current.node);
+                const pointer: Reader.DataPointer = @fromBackingInt(current.node);
                 if (!self.include_empty_values and try reader.isEmptyRecord(pointer)) {
                     continue;
                 }

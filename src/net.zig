@@ -109,7 +109,7 @@ test "Network.format" {
             .ip = try std.Io.net.IpAddress.parse(tc.addr, 0),
             .prefix_len = 64,
         };
-        const got = try std.fmt.bufPrint(&buf, "{f}", .{addr});
+        const got = try std.mem.print(&buf, "{f}", .{addr});
         try std.testing.expectEqualStrings(tc.want, got);
     }
 }
@@ -118,11 +118,11 @@ test "Network.parse" {
     var buf: [128]u8 = undefined;
 
     const v4 = try Network.parse("1.0.0.0/24");
-    const got_v4 = try std.fmt.bufPrint(&buf, "{f}", .{v4});
+    const got_v4 = try std.mem.print(&buf, "{f}", .{v4});
     try std.testing.expectEqualStrings("1.0.0.0/24", got_v4);
 
     const v6 = try Network.parse("2001:db8::/32");
-    const got_v6 = try std.fmt.bufPrint(&buf, "{f}", .{v6});
+    const got_v6 = try std.mem.print(&buf, "{f}", .{v6});
     try std.testing.expectEqualStrings("2001:0db8:0000:0000:0000:0000:0000:0000/32", got_v6);
 
     const no_cidr_v4 = try Network.parse("10.0.0.1");
@@ -296,7 +296,7 @@ test "IP.mask" {
     for (tests) |tc| {
         const ip = IP.from(try std.Io.net.IpAddress.parse(tc.addr, 0));
         const masked = ip.mask(tc.prefix_len).network(tc.prefix_len);
-        const got = try std.fmt.bufPrint(&buf, "{f}", .{masked});
+        const got = try std.mem.print(&buf, "{f}", .{masked});
 
         try std.testing.expectEqualStrings(tc.want, got);
     }

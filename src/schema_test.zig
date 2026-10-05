@@ -82,7 +82,7 @@ test "GeoLite2 Country" {
     try expectEqualStrings("JP", got_v6.value.country.iso_code);
 
     var buf: [64]u8 = undefined;
-    const got_network = try std.fmt.bufPrint(&buf, "{f}", .{got_v6.network});
+    const got_network = try std.mem.print(&buf, "{f}", .{got_v6.network});
     try expectEqualStrings("2001:0218:0000:0000:0000:0000:0000:0000/32", got_network);
 }
 
@@ -181,7 +181,7 @@ test "GeoLite2 ASN" {
     try expectEqualDeep(want, got.value);
 
     var buf: [64]u8 = undefined;
-    const got_network = try std.fmt.bufPrint(&buf, "{f}", .{got.network});
+    const got_network = try std.mem.print(&buf, "{f}", .{got.network});
     try expectEqualStrings("89.160.0.0/17", got_network);
 }
 

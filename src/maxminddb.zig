@@ -255,8 +255,8 @@ test "strict off decodes a valid database identically" {
         );
 
         try std.testing.expectEqualStrings(
-            try std.fmt.allocPrint(arena.allocator(), "{f}", .{valStrictOn}),
-            try std.fmt.allocPrint(arena.allocator(), "{f}", .{valStrictOff}),
+            try arena.allocator().print("{f}", .{valStrictOn}),
+            try arena.allocator().print("{f}", .{valStrictOff}),
         );
 
         n += 1;
@@ -737,7 +737,8 @@ test DatabaseType {
     try expectEqual(null, db_type);
 
     // Testing a long db type.
-    db_type = DatabaseType.new("v" ** 64);
+    const long_db_type: [64]u8 = @splat('v');
+    db_type = DatabaseType.new(&long_db_type);
     try expectEqual(null, db_type);
 
     db_type = DatabaseType.new("GeoLite2-City");

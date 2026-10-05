@@ -149,8 +149,8 @@ pub const Decoder = struct {
             return error.InvalidPointer;
         }
 
-        const control: ControlByte = @bitCast(self.src[next]);
-        if (control.type == @intFromEnum(FieldType.Pointer)) {
+        const control: ControlByte = @fromBackingInt(self.src[next]);
+        if (control.type == @backingInt(FieldType.Pointer)) {
             return error.InvalidPointer;
         }
 
@@ -281,18 +281,7 @@ pub const Decoder = struct {
         const double_bytes = self.src[self.offset..new_offset];
         self.offset = new_offset;
 
-        const double_value: f64 = @bitCast([8]u8{
-            double_bytes[7],
-            double_bytes[6],
-            double_bytes[5],
-            double_bytes[4],
-            double_bytes[3],
-            double_bytes[2],
-            double_bytes[1],
-            double_bytes[0],
-        });
-
-        return double_value;
+        return @bitCast(std.mem.readInt(u64, double_bytes[0..8], .big));
     }
 
     // Decodes an IEEE-754 float (binary32) stored in big-endian format.
@@ -307,14 +296,7 @@ pub const Decoder = struct {
         const float_bytes = self.src[self.offset..new_offset];
         self.offset = new_offset;
 
-        const float_value: f32 = @bitCast([4]u8{
-            float_bytes[3],
-            float_bytes[2],
-            float_bytes[1],
-            float_bytes[0],
-        });
-
-        return float_value;
+        return @bitCast(std.mem.readInt(u32, float_bytes[0..4], .big));
     }
 
     // Decodes 16-bit, 32-bit, 64-bit, and 128-bit unsigned integers.
@@ -376,7 +358,7 @@ pub const Decoder = struct {
             try self.requireBytes(1);
         }
 
-        const control: ControlByte = @bitCast(self.src[self.offset]);
+        const control: ControlByte = @fromBackingInt(self.src[self.offset]);
         self.offset += 1;
 
         // Non-extended type, size fits in the 5 control-byte bits.
@@ -384,12 +366,12 @@ pub const Decoder = struct {
             @branchHint(.likely);
             return .{
                 .size = control.size,
-                .type = @enumFromInt(control.type),
+                .type = @fromBackingInt(control.type),
             };
         }
 
         // Extended type or size-extension bytes.
-        var field_type: FieldType = @enumFromInt(control.type);
+        var field_type: FieldType = @fromBackingInt(control.type);
         if (field_type == FieldType.Extended) {
             if (self.strict) {
                 try self.requireBytes(1);
@@ -401,7 +383,7 @@ pub const Decoder = struct {
                 return error.UnknownFieldType;
             }
 
-            field_type = @enumFromInt(ext_byte + 7);
+            field_type = @fromBackingInt(@intCast(ext_byte + 7));
             self.offset += 1;
         }
 

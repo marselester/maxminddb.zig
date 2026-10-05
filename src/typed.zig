@@ -69,16 +69,20 @@ fn decodeStruct(
         const map_key = try d.decodeStringKey();
 
         var found = false;
-        inline for (std.meta.fields(T)) |f| {
-            if (std.mem.eql(u8, map_key, f.name)) {
-                if (!filter.matches(field_names, f.name)) {
+        inline for (@typeInfo(T).@"struct".field_names) |field_name| {
+            if (std.mem.eql(u8, map_key, field_name)) {
+                if (!filter.matches(field_names, field_name)) {
                     try d.skipValue();
                     found = true;
                     break;
                 }
 
-                const map_value = try decodeValue(d, allocator, f.type);
-                @field(record, f.name) = map_value;
+                const map_value = try decodeValue(
+                    d,
+                    allocator,
+                    @FieldType(T, field_name),
+                );
+                @field(record, field_name) = map_value;
                 found = true;
                 break;
             }
@@ -149,7 +153,7 @@ fn decodeValue(d: *decoder.Decoder, allocator: std.mem.Allocator, T: type) !T {
                     e.value = try decodeValue(
                         d,
                         allocator,
-                        std.meta.fieldInfo(DecodedType.Entry, .value).type,
+                        @FieldType(DecodedType.Entry, "value"),
                     );
                 }
 
@@ -165,7 +169,7 @@ fn decodeValue(d: *decoder.Decoder, allocator: std.mem.Allocator, T: type) !T {
                 try d.boundArray(field.size);
 
                 const ChildType = std.meta.Elem(
-                    std.meta.fieldInfo(DecodedType, .items).type,
+                    @FieldType(DecodedType, "items"),
                 );
                 const items = try allocator.alloc(ChildType, field.size);
                 for (items) |*item| {

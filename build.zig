@@ -53,9 +53,7 @@ pub fn build(b: *std.Build) void {
 
             const run_cmd = b.addRunArtifact(exe);
             run_cmd.step.dependOn(&install.step);
-            if (b.args) |args| {
-                run_cmd.addArgs(args);
-            }
+            run_cmd.addPassthruArgs();
 
             const run_step = b.step(ex.name, ex.file);
             run_step.dependOn(&run_cmd.step);
