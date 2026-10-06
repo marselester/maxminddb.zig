@@ -210,6 +210,25 @@ while (try it.next()) |result| {
 }
 ```
 
+### Strict mode
+
+Decoding bounds-checks every offset by default.
+For a database you trust, skip the checks to decode faster.
+
+```zig
+var db = try maxminddb.Reader.mmap(allocator, io, db_path, .{ .strict = false });
+```
+
+Lookups or records per second on GeoLite2-City.
+
+| Workload                | Default    | `strict = false` |
+|---                      |---         |---               |
+| Lookup                  | ~1,294,000 | ~1,469,000       |
+| Lookup, Index           | ~1,395,000 | ~1,619,000       |
+| Lookup, Index + `.only` | ~3,461,000 | ~3,677,000       |
+| Scan                    | ~1,066,000 | ~1,310,000       |
+| Scan + `.only`          | ~3,494,000 | ~4,151,000       |
+
 ## Benchmarks
 
 The impact of each optimization depends on the database:
@@ -227,7 +246,7 @@ The impact of each optimization depends on the database:
   in the tree often share the same record.
 - `Cache` + `.only`: `.only` helps on cache misses when decoding fewer fields.
 
-Here are reference results on Apple M2 Pro.
+Here are reference results on Apple M2 Pro with the default [`strict = true`](#strict-mode).
 
 ### Lookup
 
@@ -235,11 +254,11 @@ Here are reference results on Apple M2 Pro.
 
 | Optimization              | `geolite2.City` | `MyCity`   | `any.Value` |
 |---                        |---              |---         |---          |
-| Default                   | ~1,481,000      |            |             |
-| Index                     | ~1,707,000      | ~4,039,000 | ~1,551,000  |
-| Index + `.only`           | ~3,846,000      |            | ~3,985,000  |
-| Index + `Cache`           | ~1,833,000      |            |             |
-| Index + `Cache` + `.only` | ~4,571,000      |            |             |
+| Default                   | ~1,223,000      |            |             |
+| Index                     | ~1,311,000      | ~3,760,000 | ~1,300,000  |
+| Index + `.only`           | ~3,509,000      |            | ~3,406,000  |
+| Index + `Cache`           | ~1,489,000      |            |             |
+| Index + `Cache` + `.only` | ~4,202,000      |            |             |
 
 Index means `Reader.Options{ .ipv4_index_first_n_bits = 16 }`.
 
@@ -260,27 +279,27 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second (avg):1125588.630936204
-Lookups Per Second (avg):1550915.6897028699
-Lookups Per Second (avg):1511239.4657163993
-Lookups Per Second (avg):1505627.4723871083
-Lookups Per Second (avg):1512523.2195947382
-Lookups Per Second (avg):1535405.7856776966
-Lookups Per Second (avg):1535435.8440204468
-Lookups Per Second (avg):1490513.254274344
-Lookups Per Second (avg):1524468.191634274
-Lookups Per Second (avg):1519063.9679735743
+Lookups Per Second (avg):1229710.9226305853
+Lookups Per Second (avg):1225218.8011050248
+Lookups Per Second (avg):1217179.4528881088
+Lookups Per Second (avg):1216456.898953503
+Lookups Per Second (avg):1242657.7689984504
+Lookups Per Second (avg):1215945.8526276886
+Lookups Per Second (avg):1218536.437209655
+Lookups Per Second (avg):1207031.4414417876
+Lookups Per Second (avg):1222543.020906861
+Lookups Per Second (avg):1233156.6219894022
 ---
-Lookups Per Second (avg):1705933.828792017
-Lookups Per Second (avg):1608214.1144107645
-Lookups Per Second (avg):1733157.9483789927
-Lookups Per Second (avg):1712405.4940317846
-Lookups Per Second (avg):1749432.9458026795
-Lookups Per Second (avg):1693965.0317305569
-Lookups Per Second (avg):1709666.9269634562
-Lookups Per Second (avg):1706797.626381119
-Lookups Per Second (avg):1725899.1664985712
-Lookups Per Second (avg):1720099.158969041
+Lookups Per Second (avg):1324815.5062257235
+Lookups Per Second (avg):1304359.381009734
+Lookups Per Second (avg):1292325.9626952226
+Lookups Per Second (avg):1261687.298052833
+Lookups Per Second (avg):1322442.7247939983
+Lookups Per Second (avg):1353802.4491041726
+Lookups Per Second (avg):1353840.7864714568
+Lookups Per Second (avg):1306380.2407783412
+Lookups Per Second (avg):1282655.1988740852
+Lookups Per Second (avg):1310852.075176428
 ```
 
 </details>
@@ -302,27 +321,27 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second (avg):1705933.828792017
-Lookups Per Second (avg):1608214.1144107645
-Lookups Per Second (avg):1733157.9483789927
-Lookups Per Second (avg):1712405.4940317846
-Lookups Per Second (avg):1749432.9458026795
-Lookups Per Second (avg):1693965.0317305569
-Lookups Per Second (avg):1709666.9269634562
-Lookups Per Second (avg):1706797.626381119
-Lookups Per Second (avg):1725899.1664985712
-Lookups Per Second (avg):1720099.158969041
+Lookups Per Second (avg):1414755.1660856567
+Lookups Per Second (avg):1408326.7318017778
+Lookups Per Second (avg):1390837.7519958958
+Lookups Per Second (avg):1386812.4415858998
+Lookups Per Second (avg):1354564.1707186862
+Lookups Per Second (avg):1359661.824910908
+Lookups Per Second (avg):1370092.4572642474
+Lookups Per Second (avg):1425314.1621889044
+Lookups Per Second (avg):1396533.6986199978
+Lookups Per Second (avg):1433425.3652143858
 ---
-Lookups Per Second (avg):3752004.9729674235
-Lookups Per Second (avg):3729479.128488455
-Lookups Per Second (avg):3624840.492518967
-Lookups Per Second (avg):3962897.373342085
-Lookups Per Second (avg):3894333.1124921935
-Lookups Per Second (avg):3748089.0602182043
-Lookups Per Second (avg):4024040.97284957
-Lookups Per Second (avg):3993467.342356549
-Lookups Per Second (avg):3909014.4366861195
-Lookups Per Second (avg):3823681.7449962017
+Lookups Per Second (avg):3203045.8865182684
+Lookups Per Second (avg):3679366.5202283696
+Lookups Per Second (avg):3543986.9237656235
+Lookups Per Second (avg):3438467.3375689522
+Lookups Per Second (avg):3507171.650470981
+Lookups Per Second (avg):3395670.7744378997
+Lookups Per Second (avg):3533650.590608353
+Lookups Per Second (avg):3519525.004905338
+Lookups Per Second (avg):3654557.8058876945
+Lookups Per Second (avg):3614513.899839109
 ```
 
 </details>
@@ -337,16 +356,16 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second (avg):1787278.1540991226
-Lookups Per Second (avg):1817462.5458136417
-Lookups Per Second (avg):1798581.6374415646
-Lookups Per Second (avg):1795818.8388155655
-Lookups Per Second (avg):1826112.5419463757
-Lookups Per Second (avg):1873595.6826569808
-Lookups Per Second (avg):1826054.7436457623
-Lookups Per Second (avg):1902188.9677319797
-Lookups Per Second (avg):1847799.524838352
-Lookups Per Second (avg):1851777.2663786227
+Lookups Per Second (avg):1444098.9310991995
+Lookups Per Second (avg):1496161.8772343074
+Lookups Per Second (avg):1486953.8394942146
+Lookups Per Second (avg):1492377.216996311
+Lookups Per Second (avg):1541030.514566254
+Lookups Per Second (avg):1483817.8549126047
+Lookups Per Second (avg):1467208.5312307258
+Lookups Per Second (avg):1488864.3184918994
+Lookups Per Second (avg):1495700.3289605912
+Lookups Per Second (avg):1494598.8917603022
 ```
 
 </details>
@@ -361,16 +380,16 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second (avg):4614223.059266894
-Lookups Per Second (avg):4521374.792549717
-Lookups Per Second (avg):4615841.768353353
-Lookups Per Second (avg):4630117.292446311
-Lookups Per Second (avg):4448471.141208518
-Lookups Per Second (avg):4529092.33475036
-Lookups Per Second (avg):4407485.232169794
-Lookups Per Second (avg):4709314.612237978
-Lookups Per Second (avg):4602866.602721189
-Lookups Per Second (avg):4633354.0096756015
+Lookups Per Second (avg):4451836.134660867
+Lookups Per Second (avg):4050575.4855121044
+Lookups Per Second (avg):4431733.582542121
+Lookups Per Second (avg):4146379.6404466894
+Lookups Per Second (avg):3939484.910457005
+Lookups Per Second (avg):3882438.474036598
+Lookups Per Second (avg):4045868.0055792523
+Lookups Per Second (avg):4423041.0147885615
+Lookups Per Second (avg):4416180.087160468
+Lookups Per Second (avg):4231556.420700086
 ```
 
 </details>
@@ -385,16 +404,16 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second (avg):4231760.094140073
-Lookups Per Second (avg):4161761.4239050536
-Lookups Per Second (avg):4250223.402367586
-Lookups Per Second (avg):3582790.598479445
-Lookups Per Second (avg):3522072.387392742
-Lookups Per Second (avg):3958456.662349363
-Lookups Per Second (avg):4004160.995973864
-Lookups Per Second (avg):4273060.678675187
-Lookups Per Second (avg):4229349.145460006
-Lookups Per Second (avg):4179249.4114864566
+Lookups Per Second (avg):3948691.367747637
+Lookups Per Second (avg):3582300.7518590135
+Lookups Per Second (avg):3746194.0915746056
+Lookups Per Second (avg):3823500.210344129
+Lookups Per Second (avg):3752182.7103458056
+Lookups Per Second (avg):3652670.592391432
+Lookups Per Second (avg):3937880.5951750535
+Lookups Per Second (avg):3676047.680573454
+Lookups Per Second (avg):3755736.3003650103
+Lookups Per Second (avg):3723967.715404496
 ```
 
 </details>
@@ -416,27 +435,27 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second (avg):1535775.5072657668
-Lookups Per Second (avg):1536752.492372425
-Lookups Per Second (avg):1543397.144445188
-Lookups Per Second (avg):1537279.5100559841
-Lookups Per Second (avg):1545317.1000347503
-Lookups Per Second (avg):1551016.0204972103
-Lookups Per Second (avg):1503789.8338456748
-Lookups Per Second (avg):1563188.982871649
-Lookups Per Second (avg):1576672.4996979686
-Lookups Per Second (avg):1615207.1755578776
+Lookups Per Second (avg):1292153.8260493241
+Lookups Per Second (avg):1315646.2240460003
+Lookups Per Second (avg):1283792.0827189141
+Lookups Per Second (avg):1322878.5518209317
+Lookups Per Second (avg):1305736.5188854444
+Lookups Per Second (avg):1308686.1200057818
+Lookups Per Second (avg):1329050.0266059202
+Lookups Per Second (avg):1330518.7698937254
+Lookups Per Second (avg):1265388.975832289
+Lookups Per Second (avg):1250565.9467456145
 ---
-Lookups Per Second (avg):3909220.0910457354
-Lookups Per Second (avg):3894748.321363474
-Lookups Per Second (avg):3801548.9996837755
-Lookups Per Second (avg):4065676.251127097
-Lookups Per Second (avg):4244269.74351097
-Lookups Per Second (avg):3912579.927698888
-Lookups Per Second (avg):4075992.8099486833
-Lookups Per Second (avg):4135441.207968663
-Lookups Per Second (avg):3827693.1910532312
-Lookups Per Second (avg):3981525.0548492903
+Lookups Per Second (avg):3364560.6619773107
+Lookups Per Second (avg):3590740.561622632
+Lookups Per Second (avg):3559860.081408233
+Lookups Per Second (avg):3344827.9236885
+Lookups Per Second (avg):3467370.311681917
+Lookups Per Second (avg):3230676.352303292
+Lookups Per Second (avg):3207741.784715868
+Lookups Per Second (avg):3505906.2143863477
+Lookups Per Second (avg):3508850.9343734942
+Lookups Per Second (avg):3277059.8473349554
 ```
 
 </details>
@@ -447,10 +466,10 @@ Full GeoLite2-City scan using `any.Value`.
 
 | Optimization      | `any.Value` |
 |---                |---          |
-| Default           | ~1,343,000  |
-| `.only`           | ~4,152,000  |
-| `Cache`           | ~3,162,000  |
-| `Cache` + `.only` | ~8,690,000  |
+| Default           | ~1,068,000  |
+| `.only`           | ~3,558,000  |
+| `Cache`           | ~2,579,000  |
+| `Cache` + `.only` | ~7,799,000  |
 
 <details>
 
@@ -469,27 +488,27 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Records Per Second'
   done
 
-Records Per Second: 1348416.4971945502
-Records Per Second: 1360302.7227391207
-Records Per Second: 1362253.5582013272
-Records Per Second: 1332654.6560814735
-Records Per Second: 1320580.0868553957
-Records Per Second: 1351486.1763569769
-Records Per Second: 1309867.0925010517
-Records Per Second: 1348603.514298871
-Records Per Second: 1346351.8185439997
-Records Per Second: 1352922.1604877142
+Records Per Second: 1076705.4971518253
+Records Per Second: 1058870.81028544
+Records Per Second: 1058166.349504646
+Records Per Second: 1073577.6698382697
+Records Per Second: 1064731.8799047165
+Records Per Second: 1068167.8602854793
+Records Per Second: 1065513.5335261833
+Records Per Second: 1068416.3819943885
+Records Per Second: 1069944.4530057767
+Records Per Second: 1075483.1067097064
 ---
-Records Per Second: 4157235.7883284474
-Records Per Second: 4140488.8411180303
-Records Per Second: 4123548.4295864706
-Records Per Second: 4173748.7043202976
-Records Per Second: 4153669.1612003203
-Records Per Second: 4118582.9699281245
-Records Per Second: 4160452.6453095395
-Records Per Second: 4132271.3073195647
-Records Per Second: 4214831.898028607
-Records Per Second: 4143119.25109507
+Records Per Second: 3631917.8481170367
+Records Per Second: 3598413.288863994
+Records Per Second: 3559782.361182007
+Records Per Second: 3588856.078424154
+Records Per Second: 3397936.02486265
+Records Per Second: 3561811.2357230373
+Records Per Second: 3592255.501881362
+Records Per Second: 3588570.8187787766
+Records Per Second: 3548492.7727530287
+Records Per Second: 3511061.0591009255
 ```
 
 </details>
@@ -511,27 +530,27 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Records Per Second'
   done
 
-Records Per Second: 3202768.99866599
-Records Per Second: 3207125.9102114975
-Records Per Second: 3172674.1141741644
-Records Per Second: 3162051.935631177
-Records Per Second: 3175577.9288906963
-Records Per Second: 3191810.4514650158
-Records Per Second: 3148586.478626415
-Records Per Second: 3170526.0543755963
-Records Per Second: 3129229.221252236
-Records Per Second: 3061915.669774389
+Records Per Second: 2571685.51325415
+Records Per Second: 2563574.4067045636
+Records Per Second: 2599416.885376377
+Records Per Second: 2554529.4216985353
+Records Per Second: 2559527.3689032374
+Records Per Second: 2568978.0639614197
+Records Per Second: 2573363.130397515
+Records Per Second: 2585632.532247565
+Records Per Second: 2597590.831542499
+Records Per Second: 2611067.934169342
 ---
-Records Per Second: 8860392.508094613
-Records Per Second: 8758687.056088189
-Records Per Second: 8822526.521036463
-Records Per Second: 7472024.218026059
-Records Per Second: 8917110.559161728
-Records Per Second: 8736839.742059404
-Records Per Second: 8049847.73913308
-Records Per Second: 9143266.960318854
-Records Per Second: 9146243.279598111
-Records Per Second: 8997078.824069625
+Records Per Second: 7366914.642947414
+Records Per Second: 7656009.853799868
+Records Per Second: 7857783.4773936225
+Records Per Second: 7955941.942384728
+Records Per Second: 8076046.790968746
+Records Per Second: 7896503.84574815
+Records Per Second: 7799049.099727593
+Records Per Second: 7683797.413866087
+Records Per Second: 7843081.384596142
+Records Per Second: 7853226.446407165
 ```
 
 </details>
