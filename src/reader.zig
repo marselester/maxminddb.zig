@@ -729,24 +729,63 @@ pub const Reader = struct {
         return try self.findAddressInTree(ip, node, self.ipv4_index_first_n_bits);
     }
 
-    fn findAddressInTree(
+    inline fn findAddressInTree(
         self: *const Reader,
         ip: net.IP,
         start_node: usize,
         start_bit: usize,
     ) !struct { DataPointer, usize } {
-        const stop_bit = ip.bitCount();
+        return switch (self.metadata.record_size) {
+            inline 24, 28, 32 => |record_size| switch (ip) {
+                .v4 => |b| self.walkTree(
+                    record_size,
+                    u32,
+                    std.mem.readInt(u32, &b, .big),
+                    start_node,
+                    start_bit,
+                ),
+                .v6 => |b| self.walkTree(
+                    record_size,
+                    u128,
+                    readU128(&b),
+                    start_node,
+                    start_bit,
+                ),
+            },
+            else => unreachable,
+        };
+    }
+
+    fn readU128(bytes: *const [16]u8) u128 {
+        const high: u128 = std.mem.readInt(u64, bytes[0..8], .big);
+        const low = std.mem.readInt(u64, bytes[8..16], .big);
+        return high << 64 | low;
+    }
+
+    // Follows the address bits from start_bit, most significant first, until a record is not a node.
+    // The address is a u32 for IPv4 or a u128 for IPv6.
+    // Each step takes the next bit from the top of bits, then shifts bits left by one.
+    fn walkTree(
+        self: *const Reader,
+        comptime record_size: u16,
+        comptime Address: type,
+        address: Address,
+        start_node: usize,
+        start_bit: usize,
+    ) !struct { DataPointer, usize } {
+        if (Address != u32 and Address != u128) {
+            @compileError("address must be a u32 or a u128");
+        }
+        const bit_count = @bitSizeOf(Address);
         const node_count: usize = self.metadata.node_count;
 
+        var bits = std.math.shl(Address, address, start_bit);
         var node = start_node;
-        var prefix_len = stop_bit;
-        for (start_bit..stop_bit) |i| {
-            if (node >= node_count) {
-                prefix_len = i;
-                break;
-            }
-
-            node = self.readNode(node, ip.bitAt(i));
+        var prefix_len = start_bit;
+        while (prefix_len < bit_count and node < node_count) : (prefix_len += 1) {
+            const bit: usize = @intCast(bits >> (bit_count - 1));
+            node = readRecord(record_size, self.src, node, bit);
+            bits <<= 1;
         }
 
         if (node == node_count) {
@@ -783,31 +822,44 @@ pub const Reader = struct {
     }
 
     fn readNode(self: *const Reader, node_number: usize, index: usize) usize {
-        const src = self.src;
-        const base_offset: usize = node_number * (self.metadata.record_size / 4);
-
         return switch (self.metadata.record_size) {
-            24 => {
-                const offset = base_offset + index * 3;
-                return decoder.toUsize(src[offset .. offset + 3], 0);
-            },
-            28 => {
-                var middle = src[base_offset + 3];
-                if (index != 0) {
-                    middle &= 0x0F;
-                } else {
-                    middle = (0xF0 & middle) >> 4;
-                }
-
-                const offset = base_offset + index * 4;
-                return decoder.toUsize(src[offset .. offset + 3], middle);
-            },
-            32 => {
-                const offset = base_offset + index * 4;
-                return decoder.toUsize(src[offset .. offset + 4], 0);
-            },
+            inline 24, 28, 32 => |record_size| readRecord(record_size, self.src, node_number, index),
             else => unreachable,
         };
+    }
+
+    // Reads the left (index 0) or right (index 1) record of a node.
+    fn readRecord(
+        comptime record_size: u16,
+        src: []const u8,
+        node_number: usize,
+        index: usize,
+    ) usize {
+        switch (record_size) {
+            24 => {
+                // Both 4-byte windows stay inside the 6-byte node.
+                const offset = node_number * 6 + index * 2;
+                const word = std.mem.readInt(u32, src[offset..][0..4], .big);
+                const left: u5 = @intCast(1 - index);
+                return (word >> (left * 8)) & 0x00FF_FFFF;
+            },
+            28 => {
+                // A node is 3 bytes of the left record, 1 byte with the high nibble of each record,
+                // then 3 bytes of the right record.
+                // One 4-byte read gets a record and the shared byte.
+                const offset = node_number * 7 + index * 3;
+                const word = std.mem.readInt(u32, src[offset..][0..4], .big);
+                const left: u5 = @intCast(1 - index);
+                const low_bits = (word >> (left * 8)) & 0x00FF_FFFF;
+                const high_nibble = (word << (left * 20)) & 0x0F00_0000;
+                return low_bits | high_nibble;
+            },
+            32 => {
+                const offset = node_number * 8 + index * 4;
+                return std.mem.readInt(u32, src[offset..][0..4], .big);
+            },
+            else => @compileError("unsupported record size"),
+        }
     }
 };
 
