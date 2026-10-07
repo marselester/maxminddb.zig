@@ -927,8 +927,10 @@ pub const NetworkIterator = struct {
             const reader = self.reader;
             const bit_count = current.ip_bytes.bitCount();
 
-            // Skip networks that are aliases for the IPv4 network.
+            // Skip networks that are aliases for the IPv4 subtree.
+            // Without an IPv4 subtree, ipv4_start is a record that other networks can share.
             if (reader.ipv4_start != 0 and
+                reader.ipv4_start < self.node_count and
                 reader.ipv4_start == current.node and
                 bit_count == 128 and
                 !current.ip_bytes.isV4InV6())
