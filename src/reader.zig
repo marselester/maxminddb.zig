@@ -85,6 +85,7 @@ pub const Reader = struct {
     metadata: Metadata,
     src: []const u8,
     data_start: usize,
+    data_end: usize,
     ipv4_start: usize,
     // ipv4_index is a flat array of tree node IDs and data offsets
     // for fast lookup of IPv4 addresses by their first N bits.
@@ -263,12 +264,15 @@ pub const Reader = struct {
             metadata.node_count,
             metadata.record_size / 4,
         ) catch return error.CorruptedTree;
+
         const data_offset = std.math.add(
             usize,
             search_tree_size,
             data_section_separator_size,
         ) catch return error.CorruptedTree;
-        if (data_offset > src.len) {
+
+        const data_end = try Metadata.findStart(src) - Metadata.start_marker.len;
+        if (data_offset > data_end) {
             return error.CorruptedTree;
         }
 
@@ -276,6 +280,7 @@ pub const Reader = struct {
             .metadata = metadata,
             .src = src,
             .data_start = data_offset,
+            .data_end = data_end,
             .strict = options.strict,
             .ipv4_start = 0,
             .ipv4_index_first_n_bits = options.ipv4_index_first_n_bits,
@@ -682,7 +687,7 @@ pub const Reader = struct {
         }
 
         const resolved: usize = raw - min_pointer;
-        if (self.data_start > self.src.len or resolved >= self.src.len - self.data_start) {
+        if (resolved >= self.data_end - self.data_start) {
             return error.CorruptedTree;
         }
 
@@ -692,7 +697,7 @@ pub const Reader = struct {
     // Builds a decoder positioned at a record in the data section.
     fn recordDecoder(self: *const Reader, record_offset: usize) decoder.Decoder {
         return .{
-            .src = self.src[self.data_start..],
+            .src = self.src[self.data_start..self.data_end],
             .offset = record_offset,
             .strict = self.strict,
         };
@@ -903,6 +908,7 @@ pub const NetworkIterator = struct {
     stack: [max_stack_size]ScanNode = undefined,
     stack_len: usize = 0,
     include_empty_values: bool,
+    descents: usize = 0,
 
     // Max depth is bit_count - prefix_len + 1 (129 for IPv6 /0).
     const max_stack_size = 129;
@@ -947,6 +953,11 @@ pub const NetworkIterator = struct {
                 if (current.prefix_len >= bit_count) {
                     return error.InvalidTreeNode;
                 }
+
+                if (self.descents >= self.node_count) {
+                    return error.InvalidTreeNode;
+                }
+                self.descents += 1;
 
                 // In order traversal of the children on the right (1-bit).
                 var node = reader.readNode(current.node, 1);

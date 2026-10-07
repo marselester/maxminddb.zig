@@ -714,6 +714,22 @@ test "reject invalid node count" {
     );
 }
 
+test "reject a search tree that runs into the metadata" {
+    const src = try std.Io.Dir.cwd().readFileAlloc(
+        io,
+        "test-data/test-data/MaxMind-DB-test-ipv4-24.mmdb",
+        allocator,
+        .limited(4096),
+    );
+    defer allocator.free(src);
+
+    // 175 nodes end the search tree past the metadata marker, but not past the end of the file.
+    const key = "node_count";
+    const value = std.mem.findLast(u8, src, key).? + key.len;
+    src[value + 1] = 175;
+    try expectError(error.CorruptedTree, Reader.openBytes(allocator, src, .{}));
+}
+
 test "reject IPv6 on IPv4-only database" {
     var db = try Reader.mmap(
         allocator,

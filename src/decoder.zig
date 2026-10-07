@@ -201,6 +201,7 @@ pub const Decoder = struct {
             .Bool => {},
             // Skip each array element.
             .Array => {
+                try self.boundArray(field.size);
                 try self.descend();
                 defer self.ascend();
 
@@ -210,6 +211,7 @@ pub const Decoder = struct {
             },
             // Skip each map key-value pair.
             .Map => {
+                try self.boundMap(field.size);
                 try self.descend();
                 defer self.ascend();
 

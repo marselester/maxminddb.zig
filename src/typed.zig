@@ -64,6 +64,7 @@ fn decodeStruct(
     // Once we know the number of pairs, we can look at each pair in turn to determine
     // the size of the key and the key name, as well as the value's type and payload.
     const map_len = data_field.size;
+    try d.boundMap(map_len);
     var field_count: usize = 0;
     while (field_count < map_len) : (field_count += 1) {
         const map_key = try d.decodeStringKey();
