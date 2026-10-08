@@ -207,25 +207,31 @@ pub const IP = union(enum) {
         };
     }
 
+    // The network of this address, in the address's own family.
     pub fn network(self: IP, prefix_len: usize) Network {
         return switch (self) {
             .v4 => |b| .{
                 .ip = .{ .ip4 = .{ .bytes = b, .port = 0 } },
                 .prefix_len = prefix_len,
             },
-            .v6 => |b| {
-                // IPv4 in IPv6 form.
-                if (std.mem.allEqual(u8, b[0..12], 0) and prefix_len >= 96) {
-                    return .{
-                        .ip = .{ .ip4 = .{ .bytes = b[12..16].*, .port = 0 } },
-                        .prefix_len = prefix_len - 96,
-                    };
-                }
+            .v6 => |b| .{
+                .ip = .{ .ip6 = .{ .bytes = b, .port = 0 } },
+                .prefix_len = prefix_len,
+            },
+        };
+    }
 
-                return .{
-                    .ip = .{ .ip6 = .{ .bytes = b, .port = 0 } },
-                    .prefix_len = prefix_len,
-                };
+    // Like network, but reports a network inside ::/96 as IPv4,
+    // the way a scan reports the IPv4 subtree of an IPv6 tree.
+    pub fn scanNetwork(self: IP, prefix_len: usize) Network {
+        return switch (self) {
+            .v4 => self.network(prefix_len),
+            .v6 => |b| if (std.mem.allEqual(u8, b[0..12], 0) and prefix_len >= 96) .{
+                .ip = .{ .ip4 = .{ .bytes = b[12..16].*, .port = 0 } },
+                .prefix_len = prefix_len - 96,
+            } else .{
+                .ip = .{ .ip6 = .{ .bytes = b, .port = 0 } },
+                .prefix_len = prefix_len,
             },
         };
     }

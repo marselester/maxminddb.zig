@@ -947,7 +947,7 @@ pub const NetworkIterator = struct {
 
                 return .{
                     .pointer = pointer,
-                    .network = current.ip_bytes.network(current.prefix_len),
+                    .network = current.ip_bytes.scanNetwork(current.prefix_len),
                 };
             } else if (current.node < self.node_count) {
                 // A valid tree resolves within bit_count levels.
