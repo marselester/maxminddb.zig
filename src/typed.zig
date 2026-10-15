@@ -182,7 +182,7 @@ fn decodeValue(d: *decoder.Decoder, allocator: std.mem.Allocator, T: type) !T {
 
             // Decode Map into a nested struct, e.g., geolite2.City.continent.
             // Nested structs are always fully decoded (no field filtering).
-            return try decodeStruct(d, allocator, T, field, null);
+            return try decodeStruct(d, allocator, DecodedType, field, null);
         },
     };
 }
