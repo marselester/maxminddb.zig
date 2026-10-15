@@ -164,8 +164,15 @@ pub const Value = union(enum) {
             .int32 => |v| try writer.print("{}", .{v}),
             .uint16, .uint32, .uint64 => |v| try writer.print("{}", .{v}),
             .uint128 => |v| try writer.print("\"{}\"", .{v}),
-            .double => |v| try writer.print("{d}", .{v}),
-            .float => |v| try writer.print("{d}", .{v}),
+            inline .double, .float => |v| if (std.math.isFinite(v)) {
+                try writer.print("{d}", .{v});
+            } else if (std.math.isNan(v)) {
+                try writer.writeAll("\"NaN\"");
+            } else if (v > 0) {
+                try writer.writeAll("\"Infinity\"");
+            } else {
+                try writer.writeAll("\"-Infinity\"");
+            },
             .boolean => |v| try writer.writeAll(if (v) "true" else "false"),
             .array => |items| {
                 try writer.writeByte('[');
@@ -307,11 +314,15 @@ test "encode scalars" {
         },
         .{
             .value = .{ .double = std.math.nan(f64) },
-            .want = "nan",
+            .want = "\"NaN\"",
         },
         .{
-            .value = .{ .double = std.math.inf(f64) },
-            .want = "inf",
+            .value = .{ .double = -std.math.inf(f64) },
+            .want = "\"-Infinity\"",
+        },
+        .{
+            .value = .{ .float = std.math.inf(f32) },
+            .want = "\"Infinity\"",
         },
     };
 
