@@ -72,7 +72,7 @@ fn decodeStruct(
         var found = false;
         inline for (@typeInfo(T).@"struct".field_names) |field_name| {
             if (std.mem.eql(u8, map_key, field_name)) {
-                if (!filter.matches(field_names, field_name)) {
+                if (!filter.allows(field_names, field_name)) {
                     try d.skipValue();
                     found = true;
                     break;

@@ -73,7 +73,7 @@ fn decodeAny(
             for (0..field.size) |_| {
                 const key = try d.decodeStringKey();
 
-                if (!filter.matches(field_names, key)) {
+                if (!filter.allows(field_names, key)) {
                     try d.skipValue();
                     continue;
                 }

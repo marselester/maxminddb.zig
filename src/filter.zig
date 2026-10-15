@@ -68,6 +68,24 @@ pub fn Fields(comptime capacity: usize) type {
         pub fn only(self: *const Self) ?[]const []const u8 {
             return if (self.len > 0) self.items[0..self.len] else null;
         }
+
+        /// Reports whether name is requested.
+        pub fn matches(self: *const Self, name: []const u8) bool {
+            return allows(self.only(), name);
+        }
+
+        /// Returns the first name that is not a top-level field of T, or null.
+        pub fn unknown(self: *const Self, T: type) ?[]const u8 {
+            const names = self.only() orelse return null;
+
+            for (names) |name| {
+                if (std.meta.stringToEnum(std.meta.FieldEnum(T), name) == null) {
+                    return name;
+                }
+            }
+
+            return null;
+        }
     };
 }
 
@@ -122,6 +140,48 @@ test "append trims whitespace-only to no-op" {
     try std.testing.expectEqual(null, f.only());
 }
 
+test "Fields.matches" {
+    const tests = [_]struct {
+        input: []const u8,
+        name: []const u8,
+        want: bool,
+    }{
+        .{ .input = "", .name = "city", .want = true },
+        .{ .input = "city, country", .name = "city", .want = true },
+        .{ .input = "city, country", .name = "country", .want = true },
+        .{ .input = "city, country", .name = "continent", .want = false },
+    };
+
+    for (tests) |tc| {
+        const f = try Fields(4).parse(tc.input, ',');
+        try std.testing.expectEqual(tc.want, f.matches(tc.name));
+    }
+}
+
+test "Fields.unknown" {
+    const City = @import("geolite2.zig").City;
+    const tests = [_]struct {
+        input: []const u8,
+        want: ?[]const u8,
+    }{
+        .{ .input = "", .want = null },
+        .{ .input = "city, country", .want = null },
+        .{ .input = "city, contry, postl", .want = "contry" },
+        .{ .input = "names", .want = "names" },
+    };
+
+    for (tests) |tc| {
+        const f = try Fields(4).parse(tc.input, ',');
+        const got = f.unknown(City);
+
+        if (tc.want) |want| {
+            try std.testing.expectEqualStrings(want, got.?);
+        } else {
+            try std.testing.expectEqual(null, got);
+        }
+    }
+}
+
 test "parseAlloc empty string does not allocate" {
     var f = try Fields(4).parseAlloc(std.testing.allocator, "", ',');
     defer f.deinit(std.testing.allocator);
@@ -157,7 +217,7 @@ test "parseAlloc copies bytes" {
     try std.testing.expectEqualStrings("country", got[1]);
 }
 
-pub fn matches(field_names: ?[]const []const u8, name: []const u8) bool {
+pub fn allows(field_names: ?[]const []const u8, name: []const u8) bool {
     const names = field_names orelse return true;
 
     for (names) |n| {
@@ -169,7 +229,7 @@ pub fn matches(field_names: ?[]const []const u8, name: []const u8) bool {
     return false;
 }
 
-test matches {
+test allows {
     const f = &.{ "city", "country" };
     const tests = [_]struct {
         field_names: ?[]const []const u8,
@@ -184,6 +244,6 @@ test matches {
     };
 
     for (tests) |tc| {
-        try std.testing.expectEqual(tc.want, matches(tc.field_names, tc.name));
+        try std.testing.expectEqual(tc.want, allows(tc.field_names, tc.name));
     }
 }
